@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Stock BI Agent
 
-智能股票查询与分析系统，基于 FastMCP + FastAPI + Streamlit 构建。
+智能股票查询与分析系统，基于 FastMCP + FastAPI + Streamlit 构建，集成 Redis 缓存与 CI/CD 自动化。
 
 ## 技术架构
 
@@ -15,8 +15,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 FastAPI 后端 (端口 8000)
   ├── routers/     API 路由
   ├── services/    业务逻辑
+  │   ├── chat.py            AI 对话
+  │   ├── redis_client.py    Redis 缓存层
+  │   └── schema_normalizer  数据规范化
   ├── models/      数据模型
-  └── /stock       股票 API
+  └── /stock       股票 API（带 Redis 缓存）
        │
        ▼ (MCP 工具调用)
 MCP 服务聚合器 (main_mcp.py, 端口 8900)
@@ -28,9 +31,15 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 
 ## 核心模块
 
+### Redis 缓存层 (`services/redis_client.py`)
+- 异步 Redis 连接管理（连接失败自动降级）
+- `cached_get()` / `cached_post()` 封装 HTTP 调用 + 缓存
+- 按接口配置不同的 TTL（30s ~ 1h）
+- Redis 不可用时不影响业务
+
 ### MCP 工具服务 (`api/`)
-- `autostock.py` - 股票数据查询（K线、排名、板块等），Token: `zgaLG8unUPr`，API 文档: https://s.apifox.cn/c3278b4f-5629-4732-858c-36758ff5d083/api-147275957
-- `news.py` - 今日要闻、抖音热点、GitHub热榜等，Token: `6d997a997fbf`，API 文档: https://apis.whyta.cn/
+- `autostock.py` - 股票数据查询（K线、排名、板块等），Token: `zgaLG8unUPr`
+- `news.py` - 今日要闻、抖音热点、GitHub热榜等，Token: `6d997a997fbf`
 - `saying.py` - 名言鸡汤服务，Token: `6d997a997fbf`
 - `tool.py` - 城市天气、电话归属地、汇率换算等，Token: `6d997a997fbf`
 
@@ -46,15 +55,14 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 - `AdvancedSQLiteSession` 存储 Agent 对话状态
 - 流式输出：`Runner.run_streamed()` + `ResponseTextDeltaEvent`
 - 工具分类：`TOOL_CATEGORIES` 定义了股票分析、新闻聚合、通用工具、名言鸡汤四类
-- 任务映射：`TASK_TO_CATEGORIES` 根据任务类型自动推荐工具分类
+- 可视化工具（K线等）走 `stop_on_first_tool`，抑制 LLM 多余文字输出
 
 ### Agent 模块 (`agent/`)
-- `stock_agent.py` - 股票分析 Agent（目前主要为占位实现）
+- `stock_agent.py` - 股票分析 Agent
 - `csv_agent.py` - CSV 文件问答
 - `excel_agent.py` - Excel 文件问答
 - `summary_agent.py` - 论文总结
 - `vison_agent.py` - 多模态图片问答
-- `db_agent.py` - 数据库问答（nl2sql，代码注释掉了）
 
 ### 系统提示词模板 (`templates/`)
 - `chat_start_system_prompt.jinja2` - Jinja2 模板
@@ -69,9 +77,17 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 - `assert/sever.db` - 用户、会话、消息数据
 - `assert/conversations.db` - Agent 记忆（AdvancedSQLiteSession）
 
+### CI/CD (`.github/workflows/ci.yml`)
+- push/PR 到 main 自动触发
+- job 1: 在 Python 3.10/3.11 上运行 pytest（22 个单元测试）
+- job 2: 测试通过后构建 Docker 镜像
+
 ## 启动方式
 
 ```bash
+# Redis（可选，不启动则自动降级）
+docker run -d -p 6379:6379 --name redis-stock redis:7
+
 # 后端服务 (端口 8000)
 python main_server.py
 
@@ -89,19 +105,21 @@ OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 OPENAI_MODEL=qwen-max
 OPENAI_VISON_MODEL=qwen-vl
+REDIS_URL=redis://localhost:6379/0   # 可选，默认值
+AUTOSTOCK_TOKEN=zgaLG8unUPr          # 可选，有默认值
+WHYTA_TOKEN=6d997a997fbf             # 可选，有默认值
 ```
+
+支持从 `.env` 文件自动加载（python-dotenv）。
 
 ## 测试
 
 ```bash
+# 运行单元测试（22 个，不需要外部依赖）
+pytest test/test_schema_normalizer.py test/test_redis_client.py -v
+
 # 运行所有测试
 pytest test/
-
-# 运行单个测试文件
-pytest test/test_mcp.py
-
-# 运行特定测试
-pytest test/test_agent.py::test_agent_runing -v
 ```
 
 ## 外部 API
@@ -114,5 +132,3 @@ pytest test/test_agent.py::test_agent_runing -v
 ### whyta.cn（新闻/名言/工具）
 - Token: `6d997a997fbf`（硬编码在 `api/news.py`, `api/saying.py`, `api/tool.py`）
 - API 文档: https://apis.whyta.cn/
-
-**注意**: Token 直接硬编码在代码中，如需更换新 token 直接修改对应文件开头的 `TOKEN` 变量。
