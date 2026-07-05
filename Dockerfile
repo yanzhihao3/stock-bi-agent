@@ -6,21 +6,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
-# Patch agents library to fix TensorFlow compatibility issue
-RUN python -c " \
-import site; \
-import os; \
-networks_path = os.path.join(site.getsitepackages()[0], 'agents/scripts/networks.py'); \
-if os.path.exists(networks_path): \
-    with open(networks_path, 'r') as f: \
-        content = f.read(); \
-    if 'tfd = tf.contrib.distributions' in content: \
-        content = content.replace('tfd = tf.contrib.distributions', 'tfd = None'); \
-        with open(networks_path, 'w') as f: \
-            f.write(content); \
-        print('Patched networks.py'); \
-"
-
 # Copy project files
 COPY . .
 
