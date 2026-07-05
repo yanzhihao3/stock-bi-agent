@@ -322,7 +322,9 @@ async def chat(user_name:str, session_id: Optional[str], task: Optional[str], co
                 # 第3段：处理文本回复事件（AI 说的话）
                 # run llm again 的回答： 基础tool的结果继续回答 # 处理文本回复                    判断这个事件是否包含 AI 生成的文本内容
                 if event.type == "raw_response_event" and hasattr(event, 'data') and isinstance(event.data, ResponseTextDeltaEvent):
-                    yield event.data.delta
+                    # 可视化工具（K线等）走 stop_on_first_tool，不需要 LLM 的文字回复
+                    if tool_use_behavior != "stop_on_first_tool":
+                        yield event.data.delta
                     assistant_message += event.data.delta
 
 

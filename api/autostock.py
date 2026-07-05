@@ -24,6 +24,7 @@ from services.schema_normalizer import (
     normalize_kline,
     normalize_industry_rank,
 )
+from services.redis_client import cached_get, cached_post
 
 BASE_TIMEOUT = 10.0
 TIMEOUT_5 = 5.0
@@ -58,7 +59,7 @@ async def get_all_stock_code(
     if keyword:
         url += "&keyWord=" + keyword
     try:
-        raw_data = await async_get(url, timeout=BASE_TIMEOUT)
+        raw_data = await cached_get(url, ttl=3600, timeout=BASE_TIMEOUT)
         normalized_data = normalize_stock_code(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     # model_dump() 就像把一份填写好的表格（对象）提取成纯数据（字典），方便存储或传输。
@@ -72,7 +73,7 @@ async def get_all_index_code():
     """所有指数，支持代码和名称模糊查询"""
     url = "https://api.autostock.cn/v1/stock/index/all" + "?token=" + TOKEN
     try:
-        raw_data = await async_get(url, timeout=TIMEOUT_5)
+        raw_data = await cached_get(url, ttl=3600, timeout=TIMEOUT_5)
         normalized_data = normalize_stock_code(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     except Exception as e:
@@ -85,8 +86,8 @@ async def get_stock_industry_code():
     """获取板块数据"""
     url = "https://api.autostock.cn/v1/stock/industry/rank" + "?token=" + TOKEN
     try:
-        response = await async_get(url, timeout=TIMEOUT_5)
-        return response  # 直接返回，不做额外处理
+        response = await cached_get(url, ttl=600, timeout=TIMEOUT_5)
+        return response
     except Exception as e:
         print(traceback.format_exc())
         return error_response("获取板块数据失败")
@@ -97,7 +98,7 @@ async def get_stock_board_info():
     """获取大盘数据"""
     url = "https://api.autostock.cn/v1/stock/board" + "?token=" + TOKEN
     try:
-        raw = await async_get(url, timeout=TIMEOUT_5)
+        raw = await cached_get(url, ttl=300, timeout=TIMEOUT_5)
         board_data = raw.get("data", []) if isinstance(raw, dict) else []
         return success_response(board_data)
     except Exception as e:
@@ -125,7 +126,7 @@ async def get_stock_rank(
         "asc": asc
     }
     try:
-        return await async_post(url, json=payload, timeout=TIMEOUT_5)
+        return await cached_post(url, json_data=payload, ttl=60, timeout=TIMEOUT_5)
     except Exception as e:
         print(traceback.format_exc())
         return {}
@@ -141,7 +142,7 @@ async def get_stock_month_kline(
     """月k"""
     url = "https://api.autostock.cn/v1/stock/kline/month" + "?token=" + TOKEN
     try:
-        raw_data = await async_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, timeout=BASE_TIMEOUT)
+        raw_data = await cached_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, ttl=600, timeout=BASE_TIMEOUT)
         normalized_data = normalize_kline(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     except Exception:
@@ -159,7 +160,7 @@ async def get_stock_week_kline(
     """周k"""
     url = "https://api.autostock.cn/v1/stock/kline/week" + "?token=" + TOKEN
     try:
-        raw_data = await async_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, timeout=BASE_TIMEOUT)
+        raw_data = await cached_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, ttl=600, timeout=BASE_TIMEOUT)
         normalized_data = normalize_kline(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     except Exception:
@@ -177,7 +178,7 @@ async def get_stock_day_kline(
     """日k"""
     url = "https://api.autostock.cn/v1/stock/kline/day" + "?token=" + TOKEN
     try:
-        raw_data = await async_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, timeout=BASE_TIMEOUT)
+        raw_data = await cached_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, ttl=300, timeout=BASE_TIMEOUT)
         normalized_data = normalize_kline(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     except Exception:
@@ -190,7 +191,7 @@ async def get_stock_info(code: Annotated[str, "股票代码"]) -> Dict:
     """股票基础信息"""
     url = "https://api.autostock.cn/v1/stock" + "?token=" + TOKEN + "&code=" + code
     try:
-        raw_data = await async_get(url, timeout=BASE_TIMEOUT)
+        raw_data = await cached_get(url, ttl=600, timeout=BASE_TIMEOUT)
         normalized_data = normalize_stock_info(raw_data)
         if normalized_data:
             return success_response(normalized_data.model_dump())
@@ -205,7 +206,7 @@ async def get_stock_minute_data(code: str):
     """分时信息"""
     url = "https://api.autostock.cn/v1/stock/min" + "?token=" + TOKEN + "&code=" + code
     try:
-        raw = await async_get(url, timeout=BASE_TIMEOUT)
+        raw = await cached_get(url, ttl=30, timeout=BASE_TIMEOUT)
         data = raw.get("data", {}) if isinstance(raw, dict) else {}
         min_data = data.get("minData", []) if isinstance(data, dict) else []
         info = {k: v for k, v in data.items() if k != "minData"}

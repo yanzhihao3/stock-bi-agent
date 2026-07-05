@@ -1,6 +1,10 @@
 import asyncio
+import os
 import requests  # type: ignore
+from dotenv import load_dotenv
 from fastmcp import FastMCP, Client
+
+load_dotenv()
 
 from api.autostock import app
 from api.news import mcp as news_mcp

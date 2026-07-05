@@ -1,7 +1,9 @@
 import os
+from dotenv import load_dotenv
 
-# 从 .env 文件或系统环境变量读取配置
-# 参考 .env.example 设置你的 API Key
+# 自动从 .env 文件加载环境变量
+load_dotenv()
+
 if not os.environ.get("OPENAI_API_KEY"):
     raise ValueError("请设置 OPENAI_API_KEY 环境变量，参考 .env.example")
 
