@@ -13,20 +13,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
        │
        ▼
 FastAPI 后端 (端口 8000)
-  ├── routers/     API 路由
-  ├── services/    业务逻辑
-  │   ├── chat.py            AI 对话
-  │   ├── redis_client.py    Redis 缓存层
-  │   └── schema_normalizer  数据规范化
-  ├── models/      数据模型
-  └── /stock       股票 API（带 Redis 缓存）
+  ├── routers/         API 路由
+  ├── services/        业务逻辑
+  │   ├── chat.py              AI 对话（Agents SDK 引擎）
+  │   ├── langchain_chat.py    AI 对话（LangChain + LangGraph 引擎）
+  │   ├── chat_common.py       公共函数（模板、工具分类、DB操作）
+  │   ├── mcp_adapter.py       MCP SSE → LangChain 工具适配器
+  │   ├── redis_client.py      Redis 缓存层
+  │   └── schema_normalizer    数据规范化
+  ├── models/          数据模型
+  └── /stock           股票 API（带 Redis 缓存）
        │
        ▼ (MCP 工具调用)
 MCP 服务聚合器 (main_mcp.py, 端口 8900)
   ├── autostock.py  股票数据 (autostock.cn API)
   ├── news.py       新闻服务 (whyta.cn API)
   ├── saying.py     名言服务 (whyta.cn API)
-  └── tool.py       实用工具 (whyta.cn API)
+  └── tool.py       实用工具  (whyta.cn API)
 ```
 
 ## 核心模块
@@ -49,13 +52,25 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 - 对外暴露统一 MCP 接口，AI 无需知道工具来源
 - SSE 传输协议，端口 8900
 
-### AI 对话核心 (`services/chat.py`)
-- 使用 `agents` 包（OpenAI Chat Completions 风格）
-- `MCPServerSse` 连接 MCP 服务，通过 `ToolFilterStatic` 按任务类型过滤工具
-- `AdvancedSQLiteSession` 存储 Agent 对话状态
-- 流式输出：`Runner.run_streamed()` + `ResponseTextDeltaEvent`
-- 工具分类：`TOOL_CATEGORIES` 定义了股票分析、新闻聚合、通用工具、名言鸡汤四类
-- 可视化工具（K线等）走 `stop_on_first_tool`，抑制 LLM 多余文字输出
+### AI 对话核心 — 双引擎架构
+
+支持在 API 层通过 `engine` 参数切换两套 AI 引擎：
+
+- **agents 引擎** (`services/chat.py`) — 使用 OpenAI Agents SDK
+  - `MCPServerSse` 连接 MCP 服务，通过 `ToolFilterStatic` 按任务类型过滤工具
+  - `AdvancedSQLiteSession` 存储 Agent 对话状态
+  - 流式输出：`Runner.run_streamed()` + `ResponseTextDeltaEvent`
+
+- **langchain 引擎** (`services/langchain_chat.py`) — 使用 LangChain + LangGraph
+  - `mcp_adapter.py` 将 MCP 工具包装为 LangChain `BaseTool`
+  - `create_react_agent()` 构建 ReAct Agent 自动循环工具调用
+  - 流式输出：`astream_events()` 监听 `on_chat_model_stream`/`on_tool_start`/`on_tool_end`
+
+- **公共模块** (`services/chat_common.py`) — 两个引擎共用
+  - 工具分类：`TOOL_CATEGORIES` 定义了股票分析、新闻聚合、通用工具、名言鸡汤四类
+  - 时间签名系统提示词模板渲染
+  - 数据库操作（会话、消息持久化）
+  - 可视化工具（K线等）走 `stop_on_first_tool`，抑制 LLM 多余文字输出
 
 ### Agent 模块 (`agent/`)
 - `stock_agent.py` - 股票分析 Agent
@@ -111,6 +126,20 @@ WHYTA_TOKEN=6d997a997fbf             # 可选，有默认值
 ```
 
 支持从 `.env` 文件自动加载（python-dotenv）。
+# ...
+
+## 依赖
+
+```bash
+# 核心
+agents>=1.4.0           # OpenAI Agents SDK
+fastapi>=0.122.0        # API 框架
+fastmcp==2.13.1         # MCP 服务
+langchain>=1.2.0        # LangChain 引擎
+langchain-openai>=1.2.0 # LangChain OpenAI 适配
+langgraph>=1.1.0        # LangGraph Agent
+# 其他见 requirements.txt
+```
 
 ## 测试
 
