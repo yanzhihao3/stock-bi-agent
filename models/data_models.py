@@ -43,6 +43,8 @@ class RequestForChat(BaseModel):
     session_id: Optional[str] = Field(None, description="对话session_id, 获取对话上下文")
     task: Optional[str] = Field(None, description="对话任务")
     tools: Optional[List[str]] = Field(None, description="可选的工具列表")
+    engine: str = Field("agents", description="AI 引擎: agents (OpenAI Agents SDK) 或 langchain")
+
 
     # 后序可以持续增加，用户输入图、上传文件、链接、音频、视频，复杂的解析
     image_content: Optional[str] = Field(None)

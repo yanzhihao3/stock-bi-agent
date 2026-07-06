@@ -96,6 +96,15 @@ with st.sidebar:
                 options=tool_names,
             )
 
+    # AI 引擎选择
+    engine_choice = st.selectbox(
+        "AI 引擎:",
+        options=["agents", "langchain"],
+        index=0,
+        help="agents: OpenAI Agents SDK | langchain: LangChain",
+    )
+    st.session_state["engine"] = engine_choice
+
     st.button('清空当前聊天', on_click=clear_chat_history, width='stretch')
 
 # 9. 请求后端聊天 API  发送消息到后端，返回 SSE 流式数据
@@ -112,7 +121,8 @@ async def request_chat(content: str, user_name: str, session_id: str) -> str:
         "user_name": user_name,
         "session_id": session_id,
         "stream": True,
-        "tools": selected_tool_names
+        "tools": selected_tool_names,
+        "engine": st.session_state.get("engine", "agents"),
     }
 
     if not session_id:
