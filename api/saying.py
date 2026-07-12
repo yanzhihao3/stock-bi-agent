@@ -1,6 +1,6 @@
 import os
 import requests
-TOKEN = os.environ.get("WHYTA_TOKEN", "6d997a997fbf")
+TOKEN = os.environ.get("WHYTA_TOKEN", "")
 
 # 励志名言 MCP 服务器
 

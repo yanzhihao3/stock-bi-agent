@@ -1,7 +1,7 @@
 import os
 import requests
 import traceback
-TOKEN = os.environ.get("WHYTA_TOKEN", "6d997a997fbf")
+TOKEN = os.environ.get("WHYTA_TOKEN", "")
 
 # 这个代码创建了一个新闻聚合 MCP 服务器，AI 助手可以通过它获取：
 # ✅ 每日要闻 抖音热点 GitHub 热门头条 新闻体育/电竞新闻

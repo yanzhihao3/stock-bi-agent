@@ -2,7 +2,7 @@
 import os
 from typing import Annotated, Union
 import requests
-TOKEN = os.environ.get("WHYTA_TOKEN", "6d997a997fbf")
+TOKEN = os.environ.get("WHYTA_TOKEN", "")
 
 # 一个实用工具 MCP 服务器，为 AI 助手提供了 6 个实用的查询功能
 

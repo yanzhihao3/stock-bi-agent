@@ -3,7 +3,7 @@ https://www.autostock.cn/#/trade/stock
 https://s.apifox.cn/c3278b4f-5629-4732-858c-36758ff5d083/api-147275957
 """
 import os
-TOKEN = os.environ.get("AUTOSTOCK_TOKEN", "zgaLG8unUPr")
+TOKEN = os.environ.get("AUTOSTOCK_TOKEN", "")
 
 # FastMCP = 给 AI 用的工具接口
 # FastAPI = 给人用的 HTTP 接口   我这个定义的股票在前端被人用， 然后通过mcp = FastMCP.from_fastapi(app=app)变成工具也被AI用
