@@ -18,8 +18,31 @@ from services.chat_common import (
     suggest_categories,
     get_category_tools,
     init_chat_session,
+    get_chat_sessions,
+    MAX_HISTORY_MESSAGES,
 )
 from services.mcp_adapter import MCPClientManager
+
+
+def _build_history_messages(session_id: Optional[str], user_name: str, content: str) -> list:
+    """从数据库载入会话历史（不含 system），末尾为当前用户消息，受滑窗限制"""
+    messages = []
+    if session_id:
+        history = get_chat_sessions(session_id, user_name) or []
+        for m in sorted(history, key=lambda x: x["id"]):
+            if m["role"] == "system":
+                continue
+            if m["role"] == "user":
+                messages.append(HumanMessage(content=m["content"]))
+            elif m["role"] == "assistant":
+                messages.append(AIMessage(content=m["content"]))
+    if len(messages) > MAX_HISTORY_MESSAGES:
+        messages = messages[-MAX_HISTORY_MESSAGES:]
+    while messages and not isinstance(messages[0], HumanMessage):
+        messages.pop(0)
+    if not any(isinstance(m, HumanMessage) for m in messages):
+        messages.append(HumanMessage(content=content))
+    return messages
 
 
 async def chat(
@@ -28,7 +51,7 @@ async def chat(
     task: Optional[str],
     content: str,
     tools: List[str] = None,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str, None]: # AsyncGenerator[str, None]，表示这是个异步生成器函数（每次 yield 吐一个字）。
     """LangChain 版对话核心（接口与 agents 版本一致）"""
 
     # === 1. 会话初始化 ===
@@ -51,7 +74,8 @@ async def chat(
         tools = list(set(tools))
 
     need_viz_tools = {
-        "get_month_line", "get_week_line", "get_day_line", "get_stock_minute_data",
+        "stock_get_month_line", "stock_get_week_line", "stock_get_day_line",
+        "stock_get_minute_data",
     }
     has_viz = bool(set(need_viz_tools) & set(tools))
     tool_use_behavior = "stop_on_first_tool" if has_viz else "run_llm_again"
@@ -69,19 +93,17 @@ async def chat(
     mcp_manager = MCPClientManager("http://localhost:8900/sse")
 
     try:
-        await mcp_manager.connect()
+        await mcp_manager.connect()  # 手动连接 MCP
         lc_tools = []
         if tools:
-            lc_tools = await mcp_manager.get_langchain_tools(allowed_names=tools)
+            lc_tools = await mcp_manager.get_langchain_tools(allowed_names=tools) # 手动获取工具
 
         if not tools or not lc_tools:
             # === 无工具：直接流式输出 ===
-            messages = [
-                SystemMessage(content=instructions),
-                HumanMessage(content=content),
-            ]
+            messages = [SystemMessage(content=instructions)]
+            messages.extend(_build_history_messages(session_id, user_name, content))
             assistant_message = ""
-            async for chunk in llm.astream(messages):
+            async for chunk in llm.astream(messages): # ← 直接调 LLM，没有 Agent
                 text = chunk.content if hasattr(chunk, "content") and chunk.content else ""
                 if text:
                     yield text
@@ -91,8 +113,8 @@ async def chat(
 
         # === 5. 有工具：LangGraph ReAct Agent ===
         agent = create_react_agent(
-            model=llm,
-            tools=lc_tools,
+            model=llm,  # ChatOpenAI
+            tools=lc_tools, # 从 mcp_adapter 翻译来的工具
             prompt=SystemMessage(content=instructions),
             version="v2",
         )
@@ -105,7 +127,7 @@ async def chat(
 
         # 使用 astream_events 获取细粒度事件
         async for event in agent.astream_events(
-            {"messages": [HumanMessage(content=content)]},
+            {"messages": _build_history_messages(session_id, user_name, content)},
             version="v2",
         ):
             kind = event.get("event", "")
@@ -123,6 +145,7 @@ async def chat(
             # 工具调用结果事件 — stop_on_first_tool 在此截停
             if kind == "on_tool_end" and tool_use_behavior == "stop_on_first_tool":
                 break
+                # 截图类工具到此为止
 
             # 超限截停
             if tool_call_count >= MAX_TOOL_CALLS and kind == "on_tool_start":
@@ -142,4 +165,4 @@ async def chat(
         append_message2db(session_id, "assistant", assistant_message)
 
     finally:
-        await mcp_manager.disconnect()
+        await mcp_manager.disconnect() # 手动 disconnect()。

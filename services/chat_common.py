@@ -16,6 +16,8 @@ from models.data_models import ChatSession
 
 TIMESTAMP_SECRET = os.environ.get("TIMESTAMP_SECRET", "default_secret_change_in_production")
 
+MAX_HISTORY_MESSAGES = 20  # 双引擎共享：多轮上下文滑窗条数，超出丢弃最老
+
 TOOL_CATEGORIES = {
     "股票分析": ["stock_get_codes", "stock_get_index_code", "stock_get_industry_code",
                 "stock_get_board_info", "stock_get_rank", "stock_get_month_line",

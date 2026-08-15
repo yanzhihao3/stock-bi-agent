@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from agents import Agent, Runner, OpenAIChatCompletionsModel, ModelSettings
 from agents.extensions.memory import AdvancedSQLiteSession
+from agents.memory import SessionSettings
 from agents.mcp import MCPServerSse, ToolFilterStatic
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent, ResponseOutputItemDoneEvent, ResponseFunctionToolCall
@@ -17,6 +18,7 @@ from services.chat_common import (
     get_category_tools,
     generate_random_chat_id,
     init_chat_session,
+    MAX_HISTORY_MESSAGES,
 )
 
 
@@ -63,6 +65,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
         session_id=session_id,
         db_path="./assert/conversations.db",
         create_tables=True,
+        session_settings=SessionSettings(limit=MAX_HISTORY_MESSAGES),
     )
 
     if not tools or len(tools) == 0:
@@ -87,8 +90,8 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
     else:
         async with mcp_server:
             need_viz_tools = [
-                "get_month_line", "get_week_line", "get_day_line",
-                "get_stock_minute_data",
+                "stock_get_month_line", "stock_get_week_line", "stock_get_day_line",
+                "stock_get_minute_data",
             ]
             if set(need_viz_tools) & set(tools):
                 tool_use_behavior = "stop_on_first_tool"
@@ -107,7 +110,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                     openai_client=external_client,
                 ),
                 tool_use_behavior=tool_use_behavior,
-                model_settings=ModelSettings(parallel_tool_calls=False),
+                model_settings=ModelSettings(parallel_tool_calls=False), # 控制是否允许多个工具调用并行执行
             )
 
             result = Runner.run_streamed(agent, input=content, session=agent_session)
