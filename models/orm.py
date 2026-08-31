@@ -73,6 +73,23 @@ class ChatMessageTable(Base):
     feedback: Mapped[bool] = mapped_column(Boolean, nullable=True)
     feedback_time: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
+# 用户级长期记忆表
+# 作用：跨会话记住用户的偏好/事实（例如"用户关注新能源板块"、"用户喜欢简洁回答"），
+#       在每次对话时注入系统提示词，让 AI 记住这个用户。
+# 清理规则：删除用户时必须连同此表的记录一起删除，否则会留下孤儿数据。
+class UserMemoryTable(Base):
+    __tablename__ = 'user_memory'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True
+    )
+    key: Mapped[str] = mapped_column(String(50), nullable=False)  # 记忆类别：preference / fact / habit
+    content: Mapped[str] = mapped_column(Text, nullable=False)    # 记忆内容
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
 DATABASE_URL = "sqlite:///./assert/sever.db" # 数据库连接地址
 # 建立与数据库的连接，是 SQLAlchemy 的核心入口
 engine = create_engine(

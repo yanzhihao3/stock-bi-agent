@@ -1,20 +1,22 @@
 import streamlit as st
-import time, requests
+import requests
 
-# 一句话总结：当前登录用户可以查看自己的用户信息（如用户ID、角色、注册时间等）。
+from demo.common import API_BASE_URL, auth_headers
 
-def get_user(user_name):
+
+def get_user_info():
     response = requests.post(
-        "http://127.0.0.1:8000/v1/users/info", # 把0.0.0.0改了
-        params={"user_name": user_name}
+        f"{API_BASE_URL}/v1/users/info",
+        headers=auth_headers(),
     ).json()
 
-    st.write(response)
-
-    if response['code'] == 200:
-        return True
+    if response["code"] == 200:
+        st.json(response["data"])
     else:
-        return False
+        st.error(response.get("message", "获取用户信息失败"))
 
-if st.session_state.get('logged', False):
-    get_user(st.session_state['user_name'])
+
+if st.session_state.get("logged", False):
+    get_user_info()
+else:
+    st.info("请先登录")

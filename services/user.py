@@ -1,16 +1,20 @@
-import hashlib
+import logging
 import traceback
 from typing import Optional, List
-from models.orm import UserTable, SessionLocal
+from models.orm import (
+    UserTable,
+    SessionLocal,
+    ChatSessionTable,
+    ChatMessageTable,
+    UserFavoriteStockTable,
+    UserMemoryTable,
+)
 from models.data_models import User
+from services.auth import hash_password, verify_password
+from services.chat_common import clear_agent_session_memory
 
-# 这段代码是完整的用户管理模块，实现了用户的注册、登录、查询、删除、修改等核心功能。
+logger = logging.getLogger(__name__)
 
-def password_hash(password: str) -> str:
-    """对密码进行哈希处理。"""
-    # 作用：将明文密码转换为不可逆的哈希值
-    return hashlib.sha256(password.encode()).hexdigest()
-    # SHA256输出：64个字符（不管输入多长）
 
 def check_user_exists(username: str) -> bool:
     """检查用户是否存在。"""
@@ -25,17 +29,30 @@ def check_user_exists(username: str) -> bool:
         traceback.print_exc()
         return False
 
-def user_register(user_name: str, password: str, user_role: str) -> bool:
+def user_register(user_name: str, password: str) -> Optional[User]:
+    """注册新用户，默认角色为普通用户；第一个注册的用户自动成为管理员（便于初始化）。
+    成功返回用户信息（不含密码），用户名已存在返回 None。"""
     with SessionLocal() as session:
-        user = session.query(UserTable).filter(UserTable.user_name == user_name).first()
-        if user is not None:
-            return False
-        # 创建新用户（密码加密）
-        password = password_hash(password)
-        user = UserTable(user_name=user_name, password=password, user_role=user_role, status=True) # status=True 账户状态：启用
+        if session.query(UserTable).filter(UserTable.user_name == user_name).first():
+            return None
+        is_first_user = session.query(UserTable).first() is None
+        role = "管理员" if is_first_user else "普通用户"
+        user = UserTable(
+            user_name=user_name,
+            password=hash_password(password),
+            user_role=role,
+            status=True,
+        )
         session.add(user)
         session.commit()
-        return True
+        session.refresh(user)
+        return User(
+            user_id=user.id,
+            user_name=user.user_name,
+            user_role=user.user_role,
+            register_time=user.register_time,
+            status=user.status,
+        )
 
 # 获取用户信息
 def get_user_info(user_name: str) -> Optional[User]:
@@ -75,29 +92,62 @@ def list_users(page_index:int=1, page_size=200) -> List[User]:
         traceback.print_exc()
         return []
 
-def user_login(username: str, password: str) -> bool:
+def authenticate(user_name: str, password: str) -> Optional[User]:
+    """校验用户名与密码，成功返回用户信息（不含密码），失败返回 None"""
     with SessionLocal() as session:
-        user = session.query(UserTable).filter(UserTable.user_name == username).first()
-        if user is None:
-            return False
-        # 验证密码（加密后对比）
-        password = password_hash(password)
-        if user.password != password:
-            return False
+        user = session.query(UserTable).filter(UserTable.user_name == user_name).first()
+    if user is None or not verify_password(password, user.password):
+        return None
+    return User(
+        user_id=user.id,
+        user_name=user.user_name,
+        user_role=user.user_role,
+        register_time=user.register_time,
+        status=user.status,
+    )
 
-        return True
+
+def check_password(user_name: str, password: str) -> bool:
+    """仅校验密码是否正确（用于修改密码前验证原密码）"""
+    return authenticate(user_name, password) is not None
 
 
 def user_delete(user_name: str) -> bool:
     try:
+        session_ids: List[str] = []
         with SessionLocal() as session:
             user = session.query(UserTable).filter(UserTable.user_name == user_name).first()
             if user is None:
                 return False
 
+            # 先收集该用户的会话（用于后面清理 AI 记忆库）
+            chat_sessions = session.query(ChatSessionTable).filter(
+                ChatSessionTable.user_id == user.id
+            ).all()
+            session_ids = [s.session_id for s in chat_sessions]
+            chat_ids = [s.id for s in chat_sessions]
+
+            # 级联删除：消息 → 会话 → 自选股 → 长期记忆 → 用户本身
+            if chat_ids:
+                session.query(ChatMessageTable).filter(
+                    ChatMessageTable.chat_id.in_(chat_ids)
+                ).delete(synchronize_session=False)
+            session.query(ChatSessionTable).filter(
+                ChatSessionTable.user_id == user.id
+            ).delete(synchronize_session=False)
+            session.query(UserFavoriteStockTable).filter(
+                UserFavoriteStockTable.user_id == user.id
+            ).delete(synchronize_session=False)
+            session.query(UserMemoryTable).filter(
+                UserMemoryTable.user_id == user.id
+            ).delete(synchronize_session=False)
             session.delete(user)
             session.commit()
-            return True
+
+        # 清理该用户所有会话在 AI 记忆库（conversations.db）里的记录，避免孤儿数据
+        for sid in session_ids:
+            clear_agent_session_memory(sid)
+        return True
     except Exception as e:
         traceback.print_exc()
         return False
@@ -109,7 +159,7 @@ def user_reset_password(user_name: str, password: str) -> bool:
         if user is None:
             return False
 
-        user.password = password_hash(password)  # type: ignore
+        user.password = hash_password(password)
         session.commit()
         return True
 
@@ -133,4 +183,3 @@ def alter_user_role(user_name: str, user_role: str) -> bool:
         user.user_role = user_role  # type: ignore
         session.commit()
         return True
-

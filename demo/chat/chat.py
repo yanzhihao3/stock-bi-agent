@@ -10,6 +10,7 @@ from fastmcp import Client  # MCP 客户端
 from typing import List, Any
 import pandas as pd         # 数据处理
 from fastmcp.tools import Tool
+from demo.common import API_BASE_URL, auth_headers
 
 # 一句话总结：这是一个股票 AI 助手的前端界面，可以：与 AI 对话 调用 MCP 工具（天气、汇率等） 显示股票 K 线图
 
@@ -52,16 +53,23 @@ else:
 # 4. 侧边栏 - 登录状态显示 作用：侧边栏显示当前登录用户
 
 # 初始化对话历史
-if "messages" not in st.session_state.keys() or "session_id" in st.session_state.keys():
+if "messages" not in st.session_state.keys():
     st.session_state.messages = []
-    if "session_id" in st.session_state.keys() and st.session_state.session_id:
-        # 从后端加载历史消息（包括 system message）
-        data = requests.post(
-            "http://127.0.0.1:8000/v1/chat/get",
-            params={"session_id": st.session_state['session_id'], "user_name": st.session_state['user_name']}
-        ).json()
-        for message in data["data"]:
-            st.session_state.messages.append({"role": message["role"], "content": message["content"]})
+
+# 有 session_id 时从后端加载历史；加载失败（未登录/token 过期/会话失效）则清掉
+if st.session_state.get("session_id"):
+    resp = requests.post(
+        f"{API_BASE_URL}/v1/chat/get",
+        params={"session_id": st.session_state["session_id"]},
+        headers=auth_headers(),
+    ).json()
+    if resp.get("code") == 200 and resp.get("data") is not None:
+        st.session_state.messages = [
+            {"role": message["role"], "content": message["content"]}
+            for message in resp["data"]
+        ]
+    else:
+        st.session_state["session_id"] = None
 
 # 6. 显示历史消息 作用：渲染所有历史消息（用户和AI），不显示 system message
 if not st.session_state.messages:
@@ -105,16 +113,27 @@ with st.sidebar:
     )
     st.session_state["engine"] = engine_choice
 
+    # 对话场景（task）：可选约束，默认"自动"= 全部工具由 AI 自行判断；
+    # 选具体场景会缩小工具范围（股票+天气这类混合问题建议保持自动）
+    task_choice = st.selectbox(
+        "对话场景:",
+        options=["自动（全部工具）", "股票分析", "数据BI", "通用聊天"],
+        index=0,
+        help="自动时不限制工具；选具体场景会缩小可用工具范围",
+    )
+    st.session_state["task"] = task_choice
+
     st.button('清空当前聊天', on_click=clear_chat_history, width='stretch')
 
 # 9. 请求后端聊天 API  发送消息到后端，返回 SSE 流式数据
 async def request_chat(content: str, user_name: str, session_id: str) -> str:
-    url = "http://127.0.0.1:8000/v1/chat/"
+    url = f"{API_BASE_URL}/v1/chat/"
 
     headers = {
         "accept": "text/event-stream",  # 修改为接受事件流
         "Content-Type": "application/json"
     }
+    headers.update(auth_headers())
 
     data = {
         "content": content.text,
@@ -122,6 +141,7 @@ async def request_chat(content: str, user_name: str, session_id: str) -> str:
         "session_id": session_id,
         "stream": True,
         "tools": selected_tool_names,
+        "task": None if st.session_state.get("task") == "自动（全部工具）" else st.session_state.get("task"),
         "engine": st.session_state.get("engine", "agents"),
     }
 
@@ -135,13 +155,16 @@ async def request_chat(content: str, user_name: str, session_id: str) -> str:
             yield content
 
 # 10. 获取新会话 ID 作用：创建新对话，获取唯一 session_id
-def request_session_id() -> str:
-    url = "http://127.0.0.1:8000/v1/chat/init"
+def request_session_id():
+    url = f"{API_BASE_URL}/v1/chat/init"
     headers = {
         "Content-Type": "application/json"
     }
-    response = requests.post(url, headers=headers)
-    return response.json()["data"]["session_id"]
+    headers.update(auth_headers())
+    response = requests.post(url, headers=headers).json()
+    if response.get("code") == 200 and response.get("data"):
+        return response["data"]["session_id"]
+    return None
 
 # 11. 获取 K 线数据  作用：调用后端股票 API，获取 K 线数据并转为 DataFrame
 def fetch_k_line_data(
@@ -258,8 +281,14 @@ def plot_candlestick(df: pd.DataFrame, code: str, line_type: str):
 
 
 if prompt := st.chat_input(accept_file="multiple", file_type=["txt", "pdf", "jpg", "png", "jpeg", "doc", "docx"]):
-    if "session_id" not in st.session_state.keys() or not st.session_state.session_id:
-        st.session_state.session_id = request_session_id()
+    if not st.session_state.get('logged', False):
+        st.warning("请先登录再使用对话功能。")
+    elif "session_id" not in st.session_state.keys() or not st.session_state.session_id:
+        new_session_id = request_session_id()
+        if new_session_id:
+            st.session_state.session_id = new_session_id
+        else:
+            st.warning("创建会话失败，请确认已登录并检查后端服务。")
 
     if st.session_state.get('logged', False):
         # 2. 保存用户消息
@@ -274,52 +303,85 @@ if prompt := st.chat_input(accept_file="multiple", file_type=["txt", "pdf", "jpg
 
             with st.spinner("请求中..."):
                 async def stream_output():
+                    """读取 SSE 流并解析 message / error 事件，返回 (正文, 错误信息)"""
                     accumulated_text = ""
-                    response_generator = request_chat(prompt, st.session_state['user_name'], st.session_state['session_id'])
-                    async for data in response_generator:
-                        accumulated_text += data
-                        placeholder.markdown(accumulated_text + "▌") # 后端不断sse输出内容，前端通过markdown渲染
+                    error_message = None
+                    buffer = ""
+                    try:
+                        response_generator = request_chat(prompt, st.session_state['user_name'], st.session_state['session_id'])
+                        async for data in response_generator:
+                            buffer += data
+                            # 按 SSE 帧边界（空行）切分，逐帧解析
+                            while "\n\n" in buffer:
+                                raw_event, buffer = buffer.split("\n\n", 1)
+                                event_type = "message"
+                                data_lines = []
+                                for line in raw_event.splitlines():
+                                    line = line.strip()
+                                    if line.startswith("event:"):
+                                        event_type = line[6:].strip()
+                                    elif line.startswith("data:"):
+                                        data_lines.append(line[5:].strip())
+                                if not data_lines:
+                                    continue
+                                try:
+                                    payload = json.loads("\n".join(data_lines))
+                                except json.JSONDecodeError:
+                                    continue
+                                if event_type == "message":
+                                    accumulated_text += payload.get("content", "")
+                                    placeholder.markdown(accumulated_text + "▌")
+                                elif event_type == "error":
+                                    error_message = payload.get("message", "回答生成失败")
+                                    break
+                    except Exception as e:
+                        # 连接中断等传输层异常：给用户可读提示
+                        error_message = f"连接中断，请检查后端服务是否正常（{e}）"
+                    return accumulated_text, error_message
 
-                    return accumulated_text
+                final_text, error_message = asyncio.run(stream_output())
+                placeholder.markdown(final_text)  # 最终渲染一次
 
-                final_text = asyncio.run(stream_output())
-                placeholder.markdown(final_text) # 最后都输出完成了，重新渲染一次
-            # 5. 保存 AI 回复
-            st.session_state.messages.append({"role": "assistant", "content": final_text})
+            if error_message:
+                st.error(error_message)
+            else:
+                # 5. 保存 AI 回复
+                st.session_state.messages.append({"role": "assistant", "content": final_text})
 
-            try:
-                # 如果tool是如下的可视化的工具，则需要调用得到原始数据再进行绘图  # 6. 如果是 K 线工具调用，绘制图表
-                if "get_day_line" in final_text or "get_week_line" in final_text or "get_month_line" in final_text:
+            if not error_message:
+                try:
+                    # 6. 只有真正调用了 K 线工具（day/week/month）时才绘制图表
+                    first_json = re.search(r"```json\s*([\s\S]*?)\s*```", final_text, re.I)
+                    if first_json:
+                        raw = first_json.group(1).strip()
+                        if ":" in raw:
+                            tool_name = raw[:raw.index(":")].strip()
+                            # operation_id -> 实际 API 路径映射
+                            OPERATION_TO_PATH = {
+                                "stock_get_day_line": "get_day_line",
+                                "stock_get_week_line": "get_week_line",
+                                "stock_get_month_line": "get_month_line",
+                            }
+                            if tool_name in OPERATION_TO_PATH:
+                                endpoint = OPERATION_TO_PATH[tool_name]
+                                argv = json.loads(raw[raw.index(":")+1:])
+                                stock_code = argv.get("code", "")
+                                start_date_str = argv.get("startDate", "")
+                                end_date_str = argv.get("endDate", "")
+                                line_type = argv.get("type", 0)
+                                with st.spinner(f"正在加载 {stock_code} 数据 ({start_date_str} 至 {end_date_str})..."):
+                                    df_k_line = fetch_k_line_data(
+                                        endpoint=endpoint,
+                                        code=stock_code,
+                                        line_type=line_type,
+                                        start_date=start_date_str,
+                                        end_date=end_date_str
+                                    )
 
-                    # 解析工具json
-                    function_json = re.search(r"```json\s*([\s\S]*?)\s*```", final_text, re.I).group(1).strip()
-                    function_json = function_json.strip()
-                    endpoint = function_json[:function_json.index(":")] # 工具名字
-                    # operation_id -> 实际 API 路径映射
-                    OPERATION_TO_PATH = {
-                        "stock_get_day_line": "get_day_line",
-                        "stock_get_week_line": "get_week_line",
-                        "stock_get_month_line": "get_month_line",
-                    }
-                    endpoint = OPERATION_TO_PATH.get(endpoint, endpoint)
-                    argv = json.loads(function_json[function_json.index(":")+1:]) # 工具传入参数
-                    stock_code = argv.get("code", "")
-                    start_date_str = argv.get("startDate", "")
-                    end_date_str = argv.get("endDate", "")
-                    line_type = argv.get("type", 0)
-                    with st.spinner(f"正在加载 {stock_code} 数据 ({start_date_str} 至 {end_date_str})..."):
-                        df_k_line = fetch_k_line_data(
-                            endpoint=endpoint,
-                            code=stock_code,
-                            line_type=line_type,
-                            start_date=start_date_str,
-                            end_date=end_date_str
-                        )
-
-                        if df_k_line is not None and not df_k_line.empty:
-                            st.success(f"成功加载 {len(df_k_line)} 条数据。")
-                            plot_candlestick(df_k_line, stock_code, line_type)
-                        else:
-                            st.info("没有数据可以绘制 K 线图。请检查代码或日期范围。")
-            except:
-                traceback.print_exc()
+                                    if df_k_line is not None and not df_k_line.empty:
+                                        st.success(f"成功加载 {len(df_k_line)} 条数据。")
+                                        plot_candlestick(df_k_line, stock_code, line_type)
+                                    else:
+                                        st.info("没有数据可以绘制 K 线图。请检查代码或日期范围。")
+                except:
+                    traceback.print_exc()

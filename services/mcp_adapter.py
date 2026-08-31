@@ -11,7 +11,13 @@ from langchain_core.tools import StructuredTool
 from mcp.client.sse import sse_client
 from mcp.client.session import ClientSession
 
-
+# _server_url	str	MCP服务地址，默认本地8900端口的SSE端点
+# _sse_ctx	上下文管理器	SSE连接上下文，用于资源清理
+# _session	ClientSession	MCP客户端会话，负责发送请求
+# _read	流	SSE读取流，接收服务器消息
+# _write	流	SSE写入流，发送客户端请求
+# _connected	bool	连接状态标志
+# _tools_cache	list	缓存工具列表，避免重复获取
 class MCPClientManager:
     """管理 MCP SSE 连接，提供 LangChain 兼容的工具"""
 
@@ -37,6 +43,7 @@ class MCPClientManager:
 
     async def disconnect(self):
         """关闭 MCP 连接"""
+        # 就是 connect() 的逆操作。注意顺序：先挂会话，再挂线路——就像先说完"再见"再挂电话
         self._connected = False
         if self._session:
             try:
@@ -50,15 +57,17 @@ class MCPClientManager:
             except (Exception, asyncio.CancelledError):
                 pass
             self._sse_ctx = None
-        self._tools_cache = None
+        self._tools_cache = None # 清空缓存
 
+# 第一次调用 → 未连接 → 连接 → 获取工具 → 缓存 → 返回
+# 第二次调用 → 已连接 → 缓存命中 → 直接返回（无网络请求） 问 MCP "你有什么工具？"
     async def list_tools(self) -> list:
         """获取 MCP 工具列表"""
         if not self._connected:
             await self.connect()
         if self._tools_cache is None:
             result = await self._session.list_tools()
-            self._tools_cache = result.tools
+            self._tools_cache = result.tools  # 记下来，下次不用再问
         return self._tools_cache
 
     async def call_tool(self, name: str, arguments: dict) -> str:
@@ -72,30 +81,56 @@ class MCPClientManager:
             if hasattr(item, "text") and item.text:
                 texts.append(item.text)
         return "\n".join(texts)
+    #  你跟 MCP 说："帮我调用 get_stock_price，参数是 {code: "000001"}"
+    #   ▎ MCP 执行完，返回一段文本结果
+    #   MCP 返回的 result.content 是一个列表（可能有多个片段），这里把它们拼成一段完整的文字。
 
     async def get_langchain_tools(self, allowed_names: Optional[list[str]] = None) -> list[StructuredTool]:
         """获取 LangChain 兼容的工具列表，可按名称过滤"""
-        mcp_tools = await self.list_tools()
+        mcp_tools = await self.list_tools() # 先拿到 MCP 工具列表
         lc_tools = []
 
         for tool in mcp_tools:
             if allowed_names and tool.name not in allowed_names:
-                continue
+                continue # 只保留允许的工具
 
-            schema = tool.inputSchema or {}
+            schema = tool.inputSchema or {} # 获取参数定义
             properties = schema.get("properties", {})
 
-            # 创建 LangChain StructuredTool
+            # 创建 LangChain StructuredTool # ⭐ 关键：包装成 LangChain 的 StructuredTool
             lc_tool = StructuredTool.from_function(
                 name=tool.name,
                 description=tool.description or tool.name,
                 # 用 coroutine 包装器捕获 session
                 coroutine=self._make_async_func(tool.name),
-                args_schema=self._build_args_schema(tool.name, properties),
+                args_schema=self._build_args_schema(tool.name, properties),  # 参数类型
             )
             lc_tools.append(lc_tool)
 
         return lc_tools
+#   到底在干什么？
+    #
+    #   MCP 那边的一个工具长这样：
+    #
+    #   {
+    #       name: "get_stock_price",
+    #       description: "获取股票实时价格",
+    #       inputSchema: {
+    #           properties: {
+    #               code: { type: "string", description: "股票代码" },
+    #               market: { type: "string", description: "市场" }
+    #           }
+    #       }
+    #   }
+    #
+    #   这个函数把它翻译成 LangChain 认识的格式：
+    #
+    #   StructuredTool(
+    #       name="get_stock_price",
+    #       description="获取股票实时价格",
+    #       coroutine=async def get_stock_price(code, market): ...  # 实际干活
+    #       args_schema=get_stock_price_args(code: str, market: str)  # 参数类型
+    #   )
 
     def _make_async_func(self, tool_name: str):
         """为指定工具创建异步调用函数"""
@@ -133,5 +168,3 @@ class MCPClientManager:
             "object": dict,
         }
         return mapping.get(json_type, str)
-
-

@@ -15,14 +15,16 @@ from routers.data import router as data_routers
 from routers.stock import router as stock_routers
 
 from api.autostock import app as stock_app
+from services.errors import register_error_handlers
 
 app = FastAPI()
+register_error_handlers(app)
 
 # 这是你的股票+聊天+用户管理综合服务的启动文件，把所有路由模块整合到一起，启动服务器。
 
 @app.get("/v1/healthy")
 def read_healthy():
-    pass
+    return {"status": "ok"}
 
 # 自定义的模块挂载在一起 作用：把各个功能模块的路由注册到主应用
 app.include_router(user_routers)

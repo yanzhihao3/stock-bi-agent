@@ -1,5 +1,14 @@
 # 导入 Streamlit 库
+import os
+import sys
+
 import streamlit as st
+
+# 页面里会 import demo.common（如 API_BASE_URL、auth_headers），
+# 但 Streamlit 运行时 sys.path 只包含 demo/ 目录，需要把项目根目录也加进去
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # 一句话总结：这是应用的"总控台"，根据用户是否登录，显示不同的导航菜单，管理所有页面的跳转。
 

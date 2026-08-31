@@ -1,95 +1,111 @@
-import traceback
+"""用户管理路由（JWT 认证版）
 
-from fastapi import FastAPI, APIRouter  # type: ignore
+- 公开接口：登录、注册
+- 登录态接口：查看/修改自己的信息、改密码、删除自己的账户
+- 管理员接口：修改任意用户角色/状态、删除任意用户、查看用户列表
+
+业务错误统一抛出 BusinessError，由全局异常处理器转成对应 HTTP 状态码。
+"""
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends
 
 import services.user as user_service
-from models.data_models import RequestForUserLogin, BasicResponse, RequestForUserRegister, RequestForUserResetPassword, \
-    RequestForUserChangeInfo
+from models.data_models import (
+    BasicResponse,
+    RequestForUserChangeInfo,
+    RequestForUserDelete,
+    RequestForUserLogin,
+    RequestForUserRegister,
+    RequestForUserResetPassword,
+)
+from models.orm import UserTable
+from services.auth import create_access_token, get_current_user, require_admin
+from services.errors import BusinessError
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
 
 
-# /v1/users/login
+def _ok(data=None, message: str = "ok") -> BasicResponse:
+    return BasicResponse(code=200, message=message, data=data)
+
+
+def _auth_data(user) -> dict:
+    """登录/注册成功后返回的鉴权信息"""
+    return {
+        "token": create_access_token(user.user_name, user.user_role),
+        "user_name": user.user_name,
+        "user_role": user.user_role,
+    }
+
+
 @router.post("/login")
 def user_login(req: RequestForUserLogin) -> BasicResponse:
-    try:
-        if user_service.user_login(req.user_name, req.password):
-            return BasicResponse(code=200, message="用户登陆成功", data=[])
-        else:
-            return BasicResponse(code=400, message="用户名或密码错误", data=[])
-    except Exception as e:
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+    user = user_service.authenticate(req.user_name, req.password)
+    if user is None:
+        raise BusinessError(401, "用户名或密码错误")
+    if not user.status:
+        raise BusinessError(403, "账号已被禁用")
+    return _ok(_auth_data(user), "登录成功")
 
-# /v1/users/register
+
 @router.post("/register")
 def user_register(req: RequestForUserRegister) -> BasicResponse:
-    try:
-        if user_service.user_register(req.user_name, req.password, req.user_role):
-            return BasicResponse(code=200, message="用户注册成功", data=[])
-        else:
-            return BasicResponse(code=400, message="用户名已存在", data=[])
-    except Exception as e:
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+    user = user_service.user_register(req.user_name, req.password)
+    if user is None:
+        raise BusinessError(400, "用户名已存在")
+    return _ok(_auth_data(user), "用户注册成功")
 
 
 @router.post("/reset-password")
-def user_reset_password(req: RequestForUserResetPassword) -> BasicResponse:
-    try:
-        if not user_service.user_login(req.user_name, req.password):
-            return BasicResponse(code=400, message="用户名或密码错误", data=[])
-        else:
-            if user_service.user_reset_password(req.user_name, req.new_password):
-                return BasicResponse(code=200, message="密码重置成功", data=[])
-            else:
-                return BasicResponse(code=200, message="密码重置失败", data=[])
-    except Exception as e:
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+def user_reset_password(
+    req: RequestForUserResetPassword,
+    user: UserTable = Depends(get_current_user),
+) -> BasicResponse:
+    """修改当前登录用户的密码，需要验证原密码"""
+    if not user_service.check_password(user.user_name, req.password):
+        raise BusinessError(400, "原密码错误")
+    user_service.user_reset_password(user.user_name, req.new_password)
+    return _ok(message="密码重置成功")
 
 
 @router.post("/info")
-def user_info(user_name: str) -> BasicResponse:
-    try:
-        if not user_service.check_user_exists(user_name):
-            return BasicResponse(code=400, message="用户不存在", data=[])
-        else:
-            return BasicResponse(code=200, message="获取用户信息成功",
-                                 data=user_service.get_user_info(user_name=user_name))
-    except Exception as e:
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+def user_info(user: UserTable = Depends(get_current_user)) -> BasicResponse:
+    """获取当前登录用户的信息（身份从 token 解析，无需传用户名）"""
+    return _ok(user_service.get_user_info(user.user_name))
 
 
 @router.post("/reset-info")
-def user_reset_info(req: RequestForUserChangeInfo) -> BasicResponse:
-    try:
-        if not user_service.check_user_exists(req.user_name):
-            return BasicResponse(code=400, message="用户不存在", data=[])
-        else:
-            if req.user_role:
-                user_service.alter_user_role(req.user_name, req.user_role)
-
-            if req.status:
-                user_service.alter_user_status(req.user_name, req.status)
-
-            return BasicResponse(code=200, message="用户信息修改成功", data=[])
-    except Exception as e:
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+def user_reset_info(
+    req: RequestForUserChangeInfo,
+    admin: UserTable = Depends(require_admin),
+) -> BasicResponse:
+    """管理员修改任意用户的角色/状态"""
+    if not user_service.check_user_exists(req.user_name):
+        raise BusinessError(400, "用户不存在")
+    if req.user_role is not None:
+        user_service.alter_user_role(req.user_name, req.user_role)
+    if req.status is not None:
+        user_service.alter_user_status(req.user_name, req.status)
+    return _ok(message="用户信息修改成功")
 
 
 @router.post("/delete")
-def user_delete(user_name: str) -> BasicResponse:
-    try:
-        if not user_service.check_user_exists(user_name):
-            return BasicResponse(code=400, message="用户不存在", data=[])
-        else:
-            user_service.user_delete(user_name)
-            return BasicResponse(code=200, message="用户删除成功", data=[])
-    except Exception as e:
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+def user_delete(
+    req: Optional[RequestForUserDelete] = None,
+    user: UserTable = Depends(get_current_user),
+) -> BasicResponse:
+    """删除用户：不传 user_name 时删除自己；管理员可删除任意用户"""
+    target = (req.user_name if req else None) or user.user_name
+    if target != user.user_name and user.user_role != "管理员":
+        raise BusinessError(403, "需要管理员权限")
+    if not user_service.user_delete(target):
+        raise BusinessError(400, "用户不存在")
+    return _ok(message="用户删除成功")
 
 
 @router.post("/list")
-def user_list() -> BasicResponse:
-    try:
-        return BasicResponse(code=200, message="ok", data=user_service.list_users())
-    except Exception as e:
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+def user_list(admin: UserTable = Depends(require_admin)) -> BasicResponse:
+    """管理员查看所有用户列表"""
+    return _ok(user_service.list_users())

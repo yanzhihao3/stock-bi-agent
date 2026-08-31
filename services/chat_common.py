@@ -1,8 +1,11 @@
 """AI 对话公共模块 — 被 agents 和 langchain 两个引擎共用"""
 
 import hashlib
+import json
+import logging
 import os
 import random
+import sqlite3
 import string
 import time
 from datetime import datetime
@@ -13,10 +16,37 @@ from jinja2 import Environment, FileSystemLoader
 
 from models.orm import ChatSessionTable, ChatMessageTable, SessionLocal, UserTable
 from models.data_models import ChatSession
+from services.memory import get_memory_section
+
+logger = logging.getLogger(__name__)
 
 TIMESTAMP_SECRET = os.environ.get("TIMESTAMP_SECRET", "default_secret_change_in_production")
 
 MAX_HISTORY_MESSAGES = 20  # 双引擎共享：多轮上下文滑窗条数，超出丢弃最老
+
+AGENT_DB_PATH = "./assert/conversations.db"
+
+
+def clear_agent_session_memory(session_id: Optional[str]) -> None:
+    """清空某个会话在 Agents SDK 记忆库（conversations.db）里的4 张表记录全部记录。
+
+    删除会话/删除用户时必须一并调用，否则 conversations.db 里会残留孤儿数据。
+    """
+    if not session_id:
+        return
+    try:
+        conn = sqlite3.connect(AGENT_DB_PATH, timeout=10)
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM agent_messages WHERE session_id = ?", (session_id,))
+            cur.execute("DELETE FROM message_structure WHERE session_id = ?", (session_id,))
+            cur.execute("DELETE FROM turn_usage WHERE session_id = ?", (session_id,))
+            cur.execute("DELETE FROM agent_sessions WHERE session_id = ?", (session_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("failed to clear agent session memory for %s", session_id)
 
 TOOL_CATEGORIES = {
     "股票分析": ["stock_get_codes", "stock_get_index_code", "stock_get_industry_code",
@@ -34,6 +64,16 @@ TASK_TO_CATEGORIES = {
     "数据BI": ["股票分析", "通用工具"],
     "通用聊天": ["名言鸡汤"],
 }
+
+
+def sse_event(event: str, data: dict) -> str:
+    """构造 SSE 事件帧，格式：event: <type>\ndata: <json>\n\n
+
+    聊天流式接口统一用 SSE 传输：正文走 message 事件，异常走 error 事件，
+    前端按事件类型区分渲染，避免把错误提示当成正文展示。
+    """
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
 
 
 def get_category_tools(category: str) -> List[str]:
@@ -78,7 +118,7 @@ def generate_random_chat_id(length=12) -> str:
     return session_id
 
 
-def get_init_message(task: str) -> str:
+def get_init_message(task: str, user_name: Optional[str] = None) -> str:
     env = Environment(loader=FileSystemLoader("templates"))
     template = env.get_template("chat_start_system_prompt.jinja2")
 
@@ -114,6 +154,10 @@ def get_init_message(task: str) -> str:
         current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
         timestamp_signature=signature,
     )
+    # 注入用户长期记忆（两个引擎共用这一处）
+    memory_section = get_memory_section(user_name)
+    if memory_section:
+        system_prompt = system_prompt.rstrip() + "\n\n" + memory_section
     return system_prompt
 
 
@@ -132,7 +176,7 @@ def init_chat_session(user_name: str, user_question: str, session_id: str, task:
         message_record = ChatMessageTable(
             chat_id=chat_session_record.id,
             role="system",
-            content=get_init_message(task),
+            content=get_init_message(task, user_name),
         )
         session.add(message_record)
         session.flush()
@@ -195,6 +239,8 @@ def delete_chat_session(session_id: str, user_name: str) -> bool:
         session.query(ChatMessageTable).where(ChatMessageTable.chat_id == record.id).delete()
         session.query(ChatSessionTable).where(ChatSessionTable.id == record.id).delete()
         session.commit()
+        # 顺手清掉该会话在 AI 记忆库里的记录，避免孤儿数据
+        clear_agent_session_memory(session_id)
         return True
 
 

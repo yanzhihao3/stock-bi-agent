@@ -5,15 +5,16 @@ https://s.apifox.cn/c3278b4f-5629-4732-858c-36758ff5d083/api-147275957
 import os
 TOKEN = os.environ.get("AUTOSTOCK_TOKEN", "")
 
+import logging
 # FastMCP = 给 AI 用的工具接口
 # FastAPI = 给人用的 HTTP 接口   我这个定义的股票在前端被人用， 然后通过mcp = FastMCP.from_fastapi(app=app)变成工具也被AI用
 # 场景1：用户在前端页面查询股票  场景2：用户通过 AI 对话查询股票
 
 import httpx
 import json
+from datetime import date, timedelta
 from typing import Annotated
 from typing import Optional, Dict
-import traceback
 from fastapi import FastAPI, APIRouter  # type: ignore
 
 from services.schema_normalizer import (
@@ -26,8 +27,19 @@ from services.schema_normalizer import (
 )
 from services.redis_client import cached_get, cached_post
 
+logger = logging.getLogger(__name__)
+
 BASE_TIMEOUT = 10.0
 TIMEOUT_5 = 5.0
+
+
+def _ensure_kline_dates(start_date: Optional[str], end_date: Optional[str]) -> tuple:
+    """K线日期兜底：为空时默认最近 90 天到今天（与股票中心页面行为一致）。"""
+    if not start_date:
+        start_date = (date.today() - timedelta(days=90)).strftime("%Y-%m-%d")
+    if not end_date:
+        end_date = date.today().strftime("%Y-%m-%d")
+    return start_date, end_date
 
 
 # 内部辅助函数：发起异步 GET 请求
@@ -64,7 +76,7 @@ async def get_all_stock_code(
         return success_response([item.model_dump() for item in normalized_data])
     # model_dump() 就像把一份填写好的表格（对象）提取成纯数据（字典），方便存储或传输。
     except Exception:
-        print(traceback.format_exc())
+        logger.exception("get_stock_code failed")
         return error_response("获取股票代码失败")
 
 
@@ -77,7 +89,7 @@ async def get_all_index_code():
         normalized_data = normalize_stock_code(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     except Exception as e:
-        print(traceback.format_exc())
+        logger.exception("get_index_code failed")
         return error_response("获取指数代码失败")
 
 
@@ -89,7 +101,7 @@ async def get_stock_industry_code():
         response = await cached_get(url, ttl=600, timeout=TIMEOUT_5)
         return response
     except Exception as e:
-        print(traceback.format_exc())
+        logger.exception("get_industry_code failed")
         return error_response("获取板块数据失败")
 
 
@@ -102,7 +114,7 @@ async def get_stock_board_info():
         board_data = raw.get("data", []) if isinstance(raw, dict) else []
         return success_response(board_data)
     except Exception as e:
-        print(traceback.format_exc())
+        logger.exception("get_board_info failed")
         return error_response("获取大盘数据失败")
 
 
@@ -128,7 +140,7 @@ async def get_stock_rank(
     try:
         return await cached_post(url, json_data=payload, ttl=60, timeout=TIMEOUT_5)
     except Exception as e:
-        print(traceback.format_exc())
+        logger.exception("get_stock_rank failed")
         return {}
 
 
@@ -140,13 +152,14 @@ async def get_stock_month_kline(
         type: Annotated[int, "0不复权,1前复权,2后复权"] = 0
 ) -> Dict:
     """月k"""
+    startDate, endDate = _ensure_kline_dates(startDate, endDate)
     url = "https://api.autostock.cn/v1/stock/kline/month" + "?token=" + TOKEN
     try:
         raw_data = await cached_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, ttl=600, timeout=BASE_TIMEOUT)
         normalized_data = normalize_kline(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     except Exception:
-        print(traceback.format_exc())
+        logger.exception("get_month_line failed")
         return error_response("获取月K线数据失败")
 
 
@@ -158,13 +171,14 @@ async def get_stock_week_kline(
         type: Annotated[int, "0不复权,1前复权,2后复权"] = 0
 ):
     """周k"""
+    startDate, endDate = _ensure_kline_dates(startDate, endDate)
     url = "https://api.autostock.cn/v1/stock/kline/week" + "?token=" + TOKEN
     try:
         raw_data = await cached_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, ttl=600, timeout=BASE_TIMEOUT)
         normalized_data = normalize_kline(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     except Exception:
-        print(traceback.format_exc())
+        logger.exception("get_week_line failed")
         return error_response("获取周K线数据失败")
 
 
@@ -176,13 +190,14 @@ async def get_stock_day_kline(
         type: Annotated[int, "0不复权,1前复权,2后复权"] = 0
 ) -> Dict:
     """日k"""
+    startDate, endDate = _ensure_kline_dates(startDate, endDate)
     url = "https://api.autostock.cn/v1/stock/kline/day" + "?token=" + TOKEN
     try:
         raw_data = await cached_get(url, params={"code": code, "startDate": startDate, "endDate": endDate, "type": type}, ttl=300, timeout=BASE_TIMEOUT)
         normalized_data = normalize_kline(raw_data)
         return success_response([item.model_dump() for item in normalized_data])
     except Exception:
-        print(traceback.format_exc())
+        logger.exception("get_day_line failed")
         return error_response("获取日K线数据失败")
 
 
@@ -197,7 +212,7 @@ async def get_stock_info(code: Annotated[str, "股票代码"]) -> Dict:
             return success_response(normalized_data.model_dump())
         return error_response("未找到股票信息")
     except Exception:
-        print(traceback.format_exc())
+        logger.exception("get_stock_info failed")
         return error_response("获取股票信息失败")
 
 
@@ -213,5 +228,5 @@ async def get_stock_minute_data(code: str):
         result = {**info, "minData": min_data}
         return success_response(result)
     except Exception:
-        print(traceback.format_exc())
+        logger.exception("get_stock_minute_data failed")
         return error_response("获取分时数据失败")

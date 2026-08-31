@@ -22,6 +22,10 @@ Thumbs.db
 # --- Database ---
 assert/*.db
 assert/*.sqlite
+assert/*.db-*
+
+# --- Backups（含旧数据，不提交） ---
+backups/
 
 # --- Project specific ---
 docs/

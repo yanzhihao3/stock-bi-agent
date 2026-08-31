@@ -23,7 +23,6 @@ class RequestForUserLogin(BaseModel):
 class RequestForUserRegister(BaseModel):
     user_name: str
     password: str
-    user_role: str
 
 class RequestForUserResetPassword(BaseModel):
     user_name: str
@@ -32,8 +31,13 @@ class RequestForUserResetPassword(BaseModel):
 
 class RequestForUserChangeInfo(BaseModel):
     user_name: str
-    user_role: Optional[str]
-    status: Optional[bool]
+    user_role: Optional[str] = None
+    status: Optional[bool] = None
+
+
+class RequestForUserDelete(BaseModel):
+    """删除用户：不传 user_name 时删除当前登录用户；管理员可指定任意用户名"""
+    user_name: Optional[str] = None
 
 # 用户在对话，传入的信息  聊天请求（核心）
 class RequestForChat(BaseModel):

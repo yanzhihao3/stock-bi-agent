@@ -14,7 +14,21 @@
 ### AI 对话 — 双引擎
 - **Agents 引擎**：OpenAI Agents SDK，MCP 原生支持
 - **LangChain 引擎**：LangChain + LangGraph ReAct Agent
-- 通用对话、股票分析、CSV/Excel 问答、论文总结、多模态
+- 通用对话、股票数据分析
+
+### 用户级长期记忆
+- 跨会话记住用户身份、偏好、持仓等稳定信息（`user_memory` 表）
+- 批量异步提取：未处理消息攒够 `MEMORY_BATCH_SIZE`（默认 10）条才调一次模型，不阻塞回答
+- 支持加 / 改（同 key 覆盖）/ 删（过时记忆）三种动作，不重复堆积
+- 每次对话自动注入「用户长期记忆」段落，新开会话也能记得用户
+- 删除会话/用户时业务数据与 AI 记忆同步清理，无孤儿数据
+
+### 用户认证 — JWT
+- 登录/注册成功后签发 JWT（HS256），有效期默认 24 小时
+- 业务接口通过 `Authorization: Bearer <token>` 鉴权，用户身份由 token 解析，不再信任客户端传入的用户名
+- 角色体系：`管理员` / `普通用户`；用户列表、修改他人角色/状态等操作仅管理员可用
+- 密码使用带盐 PBKDF2-SHA256 存储，兼容旧版无盐 SHA256（存量用户无需重置密码）
+- 第一个注册的用户自动成为管理员（便于初始化），之后注册的用户默认为普通用户
 
 ### 实用工具
 - 今日要闻、抖音热点、GitHub 热榜
@@ -35,8 +49,15 @@ pip install -r requirements.txt
 
 ```bash
 OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OPENAI_MODEL=qwen-max
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-v4-flash
+JWT_SECRET=change_me_to_a_long_random_string
+
+# 长期记忆（可选）
+MEMORY_ENABLED=1          # 0 关闭
+MEMORY_BATCH_SIZE=10      # 攒够多少条未处理消息才提取
+MEMORY_MAX_ITEMS=30       # 每用户最多保留记忆条数
+MEMORY_MODEL=             # 提取用模型，默认同 OPENAI_MODEL
 ```
 
 ### 3. 启动 Redis（可选，不启动则自动降级为直调 API）
@@ -67,6 +88,18 @@ POST /v1/chat/
 | OpenAI Agents SDK | `agents` | 默认，原生 MCP 支持 |
 | LangChain + LangGraph | `langchain` | ReAct Agent，工具循环自动编排 |
 
+## 对话场景（task 参数）
+
+前端侧边栏的 `对话场景` 是**可选约束**，默认 `自动（全部工具）`，对应请求体中的 `task` 字段：
+- 不选（自动）→ 不传 `task`，后端全量开放工具，由 AI 根据问题自行选择，适合股票 + 天气这类混合问题
+- 选具体场景 → 按分类缩小工具范围：`股票分析` 仅股票工具，`数据BI` 股票 + 通用工具，`通用聊天` 仅名言鸡汤
+
+手动勾选具体工具时以勾选为准，优先级：勾选工具 > 场景分类 > 全量开放。
+
+工具调用上限默认 5 次，防止 AI 无限循环调工具，可通过环境变量 `MAX_TOOL_CALLS` 调整。
+工具执行后模型会继续生成最终回答（`run_llm_again`），同一轮即可看到结果，不会等下一轮。
+对话失败时后端返回友好兜底文案，并自动清理该会话的 AI 记忆（自愈），不影响下次使用。
+
 ## 项目结构
 
 ```
@@ -76,7 +109,10 @@ POST /v1/chat/
 ├── services/
 │   ├── chat.py             # AI 对话 — Agents SDK 引擎
 │   ├── langchain_chat.py   # AI 对话 — LangChain + LangGraph 引擎
-│   ├── chat_common.py      # 公共函数（模板、工具分类、DB操作）
+│   ├── chat_common.py      # 公共函数（模板、工具分类、DB操作、记忆注入/清理）
+│   ├── memory.py           # 用户级长期记忆（批量提取、注入、清理）
+│   ├── auth.py             # JWT 鉴权（登录态校验）
+│   ├── errors.py           # 统一错误响应
 │   ├── mcp_adapter.py      # MCP SSE → LangChain 工具适配器
 │   ├── redis_client.py     # Redis 缓存客户端
 │   └── schema_normalizer.py# 响应数据规范化
@@ -86,7 +122,6 @@ POST /v1/chat/
 │   ├── saying.py           # 名言
 │   └── tool.py             # 实用工具
 ├── routers/                # API 路由
-├── agent/                  # AI Agent 模块
 ├── demo/                   # Streamlit 前端
 ├── models/                 # 数据模型
 ├── test/                   # 单元测试
@@ -96,8 +131,8 @@ POST /v1/chat/
 ## 测试
 
 ```bash
-# 运行单元测试（22 个测试，不需要外部依赖）
-pytest test/test_schema_normalizer.py test/test_redis_client.py -v
+# 运行单元测试（39 个测试，不需要外部依赖）
+pytest test/test_schema_normalizer.py test/test_redis_client.py test/test_auth.py test/test_chat_common.py test/test_jinja2_template.py test/test_errors.py -v
 
 # 运行所有测试
 pytest test/

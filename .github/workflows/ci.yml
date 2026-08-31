@@ -26,7 +26,7 @@ jobs:
           pip install -r requirements.txt pytest
 
       - name: Run unit tests
-        run: python -m pytest test/test_schema_normalizer.py test/test_redis_client.py -v
+        run: python -m pytest test/test_schema_normalizer.py test/test_redis_client.py test/test_auth.py test/test_chat_common.py test/test_jinja2_template.py test/test_errors.py -v
 
   docker:
     needs: test

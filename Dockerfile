@@ -17,6 +17,8 @@ ENV OPENAI_API_KEY=""
 ENV OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 ENV OPENAI_MODEL="qwen-max"
 ENV OPENAI_VISON_MODEL="qwen-vl"
+ENV JWT_SECRET="change_me_to_a_long_random_secret_at_least_32_bytes"
+ENV JWT_EXPIRE_MINUTES=1440
 
 # Expose ports
 EXPOSE 8000 8900 8501

@@ -1,44 +1,41 @@
-import traceback
+"""自选股路由（JWT 认证版），用户身份从 token 解析"""
 
-from fastapi import FastAPI, APIRouter  # type: ignore
+from fastapi import APIRouter, Depends
+
 import services.stock as service_stock
 from models.data_models import BasicResponse
+from models.orm import UserTable
+from services.auth import get_current_user
+from services.errors import BusinessError
 
 router = APIRouter(prefix="/v1/stock", tags=["stocks"])
 
-# 这段代码是自选股功能的 API 路由层，提供了4个接口来管理用户的股票收藏
+
+def _ok(data=None, message: str = "ok") -> BasicResponse:
+    return BasicResponse(code=200, message=message, data=data)
+
 
 @router.post("/list_fav_stock")
-def get_user_all_stock(user_name: str):
-    try:
-        return BasicResponse(code=200, message="获取用户所有股票成功", data=service_stock.get_user_all_stock(user_name))
-    except Exception as e:
-        print(traceback.format_exc())
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+def get_user_all_stock(user: UserTable = Depends(get_current_user)):
+    return _ok(service_stock.get_user_all_stock(user.user_name))
+
 
 @router.post("/del_fav_stock")
-def delete_user_stock(user_name: str, stock_code: str):
-    try:
-        return BasicResponse(code=200, message="删除成功", data=service_stock.delete_user_stock(user_name, stock_code))
-    except Exception as e:
-        print(traceback.format_exc())
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+def delete_user_stock(stock_code: str, user: UserTable = Depends(get_current_user)):
+    if not service_stock.delete_user_stock(user.user_name, stock_code):
+        raise BusinessError(400, "用户不存在")
+    return _ok(message="删除成功")
+
 
 @router.post("/add_fav_stock")
-def add_user_stock(user_name: str, stock_code: str):
-    try:
-        return BasicResponse(code=200, message="添加成功", data=service_stock.add_user_stock(user_name, stock_code))
-    except Exception as e:
-        print(traceback.format_exc())
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
+def add_user_stock(stock_code: str, user: UserTable = Depends(get_current_user)):
+    if not service_stock.add_user_stock(user.user_name, stock_code):
+        raise BusinessError(400, "添加失败（可能已存在或用户不存在）")
+    return _ok(message="添加成功")
+
 
 @router.post("/clear_fav_stock")
-# 清空用户的所有自选股
-def clear_user_stock(user_name: str):
-    try:
-        return BasicResponse(code=200, message="删除成功", data=service_stock.clear_user_stock(user_name))
-    except Exception as e:
-        print(traceback.format_exc())
-        return BasicResponse(code=404, message=traceback.format_exc(), data=[])
-
-
+def clear_user_stock(user: UserTable = Depends(get_current_user)):
+    if not service_stock.clear_user_stock(user.user_name):
+        raise BusinessError(400, "清空失败（用户不存在）")
+    return _ok(message="清空成功")

@@ -3,6 +3,7 @@ Redis 缓存工具模块
 
 为外部 API 响应提供缓存层，降低延迟和外部 API 调用量。
 缓存穿透时自动降级为直调外部 API，不影响业务。
+GET 用 params 生成缓存 key，POST 用 json body 生成缓存 key。
 """
 import json
 import os
@@ -25,7 +26,7 @@ async def _get_client() -> aioredis.Redis:
     if _redis is None:
         _redis = aioredis.from_url(
             REDIS_URL,
-            decode_responses=True,
+            decode_responses=True,  # 返回的 key/value 为 str 而非 bytes
             socket_connect_timeout=2,
             socket_timeout=2,
         )
@@ -38,7 +39,6 @@ async def close():
     if _redis:
         await _redis.close()
         _redis = None
-
 
 def _make_key(url: str, params: Optional[Dict] = None) -> str:
     """从 URL + 参数生成确定性缓存键"""
@@ -60,7 +60,7 @@ async def get_cache(url: str, params: Optional[Dict] = None) -> Optional[Dict[st
         if cached:
             return json.loads(cached)
     except Exception:
-        pass
+        pass  # Redis 异常视为未命中，降级直调外部 API
     return None
 
 
@@ -88,7 +88,7 @@ async def cached_get(
     """
     # 读缓存
     cached = await get_cache(url, params)
-    if cached is not None:
+    if cached is not None:  # None 表示未命中，而非数据为空
         return cached
 
     # 调外部 API

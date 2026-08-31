@@ -1,45 +1,51 @@
 import streamlit as st
-import time, requests
+import requests
 
-def register_user(user_name, password, user_role):
+from demo.common import API_BASE_URL
+
+
+def register_user(user_name, password):
     response = requests.post(
-        "http://127.0.0.1:8000/v1/users/register", # 把0.0.0.0改了
-        json={"user_name": user_name, "password": password, "user_role": user_role}
+        f"{API_BASE_URL}/v1/users/register",
+        json={"user_name": user_name, "password": password},
     ).json()
-    st.write(response)
-    if response['code'] == 200:
-        st.session_state['logged_in'] = True
-        st.session_state['user_name'] = user_name
-        return True
-    else:
-        # 模拟登录失败
-        return False
+
+    if response["code"] == 200:
+        data = response["data"]
+        st.session_state["logged"] = True
+        st.session_state["user_name"] = user_name
+        st.session_state["token"] = data["token"]
+        st.session_state["user_role"] = data["user_role"]
+        return True, response["message"]
+    return False, response.get("message", "注册失败")
+
 
 def page():
+    if st.session_state.get("logged", False):
+        st.info(
+            f"您已注册并登录为 **{st.session_state['user_name']}**"
+            f"（角色：{st.session_state.get('user_role')}）。"
+        )
+        return
 
-    # 未登录时显示登录表单
-    with st.form(key='register_form'):
-        username = st.text_input("用户名", placeholder="请输入用户名") # 密码输入框（隐藏输入）
+    st.caption("提示：第一个注册的用户会自动成为管理员。")
+    with st.form(key="register_form"):
+        username = st.text_input("用户名", placeholder="请输入用户名")
         password = st.text_input("密码", type="password", placeholder="请输入密码")
-        role = st.selectbox("用户类型",options=["普通用户", "管理员"])
-
-        # 登录按钮
         submitted = st.form_submit_button("注册")
 
         if submitted:
-            # 简单的输入校验
             if not username or not password:
                 st.error("用户名和密码不能为空！")
                 return
-
-            # 使用 Spinner 显示加载状态
-            with st.spinner("正在验证凭证..."):
-                if register_user(username, password, role):
-                    st.success(f"注册成功！欢迎，{username}！")
-                    time.sleep(0.5)
-                    st.rerun()  # 重新运行以刷新导航栏和内容
+            with st.spinner("正在注册..."):
+                ok, message = register_user(username, password)
+                if ok:
+                    st.success(message)
+                    st.rerun()
                 else:
-                    st.error("注册失败：用户名或密码错误。")
+                    st.error(message)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     page()

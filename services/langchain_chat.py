@@ -4,6 +4,7 @@
 """
 
 import json
+import logging
 import os
 from typing import AsyncGenerator, List, Optional
 
@@ -21,7 +22,10 @@ from services.chat_common import (
     get_chat_sessions,
     MAX_HISTORY_MESSAGES,
 )
+from services.memory import schedule_memory_extraction
 from services.mcp_adapter import MCPClientManager
+
+logger = logging.getLogger(__name__)
 
 
 def _build_history_messages(session_id: Optional[str], user_name: str, content: str) -> list:
@@ -62,8 +66,11 @@ async def chat(
             if not record:
                 init_chat_session(user_name, content, session_id, task)
 
-    append_message2db(session_id, "user", content)
-    instructions = get_init_message(task)
+    try:
+        append_message2db(session_id, "user", content)
+    except Exception:
+        logger.exception("failed to persist user message")
+    instructions = get_init_message(task, user_name)
 
     # === 2. 工具选择 ===
     if not tools:
@@ -72,13 +79,6 @@ async def chat(
         for cat in suggested_cats:
             tools.extend(get_category_tools(cat))
         tools = list(set(tools))
-
-    need_viz_tools = {
-        "stock_get_month_line", "stock_get_week_line", "stock_get_day_line",
-        "stock_get_minute_data",
-    }
-    has_viz = bool(set(need_viz_tools) & set(tools))
-    tool_use_behavior = "stop_on_first_tool" if has_viz else "run_llm_again"
 
     # === 3. 初始化 LLM ===
     llm = ChatOpenAI(
@@ -108,7 +108,11 @@ async def chat(
                 if text:
                     yield text
                     assistant_message += text
-            append_message2db(session_id, "assistant", assistant_message)
+            try:
+                append_message2db(session_id, "assistant", assistant_message)
+            except Exception:
+                logger.exception("failed to persist assistant message")
+            schedule_memory_extraction(user_name)
             return
 
         # === 5. 有工具：LangGraph ReAct Agent ===
@@ -119,10 +123,9 @@ async def chat(
             version="v2",
         )
 
-        # 手动维护工具调用上下文，用于 stop_on_first_tool
-        tool_invoked = False
         tool_call_count = 0
-        MAX_TOOL_CALLS = 10
+        # 工具调用上限：单次问答最多允许的工具调用次数（可用环境变量调整）
+        MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", "5"))
         assistant_message = ""
 
         # 使用 astream_events 获取细粒度事件
@@ -134,7 +137,12 @@ async def chat(
 
             # 工具调用事件 — 在任何模式下都记录
             if kind == "on_tool_start":
-                tool_invoked = True
+                # 超限检查放在最先，避免"先宣告第 N+1 次调用再截停"的边界问题
+                if tool_call_count >= MAX_TOOL_CALLS:
+                    msg = "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
+                    yield msg
+                    assistant_message += msg
+                    break
                 tool_call_count += 1
                 tool_input = event.get("data", {}).get("input", {})
                 tool_name = event.get("name", "unknown")
@@ -142,27 +150,18 @@ async def chat(
                 yield f"\n```json\n{tool_name}:{args_json}\n```\n\n"
                 assistant_message += f"\n```json\n{tool_name}:{args_json}\n```\n\n"
 
-            # 工具调用结果事件 — stop_on_first_tool 在此截停
-            if kind == "on_tool_end" and tool_use_behavior == "stop_on_first_tool":
-                break
-                # 截图类工具到此为止
-
-            # 超限截停
-            if tool_call_count >= MAX_TOOL_CALLS and kind == "on_tool_start":
-                msg = "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
-                yield msg
-                assistant_message += msg
-                break
-
-            # LLM 文本流 — run_llm_again 模式下才输出
+            # LLM 文本流 — 始终流式输出；工具执行完后模型会继续生成最终回答
             if kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk", {})
                 text = chunk.content if hasattr(chunk, "content") and chunk.content else ""
-                if tool_use_behavior != "stop_on_first_tool":
-                    yield text
+                yield text
                 assistant_message += text
 
-        append_message2db(session_id, "assistant", assistant_message)
+        try:
+            append_message2db(session_id, "assistant", assistant_message)
+        except Exception:
+            logger.exception("failed to persist assistant message")
+        schedule_memory_extraction(user_name)
 
     finally:
         await mcp_manager.disconnect() # 手动 disconnect()。

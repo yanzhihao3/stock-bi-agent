@@ -3,6 +3,8 @@ import requests
 import pandas as pd
 from datetime import datetime
 
+from demo.common import auth_headers
+
 # 一句话总结：类似股票软件的"自选股"功能，用户可以管理自己关注的股票列表。
 
 # -------------------- API 配置 --------------------
@@ -31,8 +33,18 @@ def _call_api(endpoint: str, params: dict = None):
 
     try:
         # 所有收藏操作都是 POST，参数通过 URL 传递
-        response = requests.post(url, params=params)
-        response.raise_for_status()  # 对 4xx 或 5xx 状态码抛出异常
+        response = requests.post(url, params=params, headers=auth_headers())
+        if not response.ok:
+            # 业务错误：后端返回统一 JSON（HTTP 4xx/5xx + code/message）
+            try:
+                detail = response.json().get("message", "")
+            except Exception:
+                detail = ""
+            return {
+                "success": False,
+                "message": detail or f"请求失败（HTTP {response.status_code}）",
+                "data": None,
+            }
 
         data = response.json()
 
@@ -43,8 +55,6 @@ def _call_api(endpoint: str, params: dict = None):
 
     except requests.exceptions.ConnectionError:
         return {"success": False, "message": f"连接错误：无法连接到后端服务 ({BASE_URL})。", "data": None}
-    except requests.exceptions.HTTPError as e:
-        return {"success": False, "message": f"API 请求失败：{e}。响应内容: {response.text}", "data": None}
     except Exception as e:
         return {"success": False, "message": f"发生未知错误：{e}", "data": None}
 
@@ -53,27 +63,26 @@ def _call_api(endpoint: str, params: dict = None):
 
 @st.cache_data(show_spinner="正在加载收藏列表...")
 def _fetch_favorites(username: str):
-    """获取用户收藏的股票列表，使用缓存以避免多次查询"""
-    params = {"user_name": username}
-    return _call_api(LIST_ENDPOINT, params=params)
+    """获取用户收藏的股票列表，使用缓存以避免多次查询
+    username 仅用于区分不同用户的缓存，身份由 JWT 决定"""
+    return _call_api(LIST_ENDPOINT)
 
 
 def _add_favorite(username: str, stock_code: str):
     """添加收藏股票"""
-    params = {"user_name": username, "stock_code": stock_code}
+    params = {"stock_code": stock_code}
     return _call_api(ADD_ENDPOINT, params=params)
 
 
 def _delete_favorite(username: str, stock_code: str):
     """删除收藏股票"""
-    params = {"user_name": username, "stock_code": stock_code}
+    params = {"stock_code": stock_code}
     return _call_api(DEL_ENDPOINT, params=params)
 
 
 def _clear_favorites(username: str):
     """清空所有收藏股票"""
-    params = {"user_name": username}
-    return _call_api(CLEAR_ENDPOINT, params=params)
+    return _call_api(CLEAR_ENDPOINT)
 
 
 # -------------------- Streamlit 页面 --------------------
