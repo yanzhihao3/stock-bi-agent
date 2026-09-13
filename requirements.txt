@@ -1,20 +1,60 @@
-agents==1.4.0
-fastapi==0.122.0
-fastmcp==2.13.1
+# ============================================================
+# 依赖版本已与本机验证环境 rag310 完全对齐（2026-09-13）
+#
+# 对齐原则：镜像里装的版本，必须和本地实际跑通过的版本一致。
+# 否则会出现「本机能跑、容器里跑不了」这类最难排查的问题 ——
+# 因为你分不清差异到底来自代码、配置还是依赖版本。
+#
+# 全部用 == 锁定具体版本，保证任何时间、任何机器构建出的镜像完全一致。
+# ============================================================
+
+# ---- AI 引擎①：OpenAI Agents SDK ----
+# ⚠️ 包名是 openai-agents，不是 agents。
+# PyPI 上确实另有一个叫 agents 的包，但它是已退役的 TensorFlow Agents（强化学习），
+# 依赖 tensorflow + gym（约 700MB），而且不提供本项目要用的 Agent / Runner 类。
+# 原来的 agents==1.4.0 装的就是它 —— 属于装错包，装完代码依然跑不起来。
+openai-agents==0.13.6
+
+# ---- AI 引擎②：LangChain + LangGraph ----
+# ⚠️ 原来这几个写的是 >= 开放区间，属于典型的「版本漂移」隐患：
+# 上游发布 langchain-openai 1.6.x 后要求 openai>=2.45，与本文件锁死的
+# openai==2.8.1 直接冲突，于是代码一行没改，构建却突然失败。
+langchain==1.2.18
+langchain-openai==1.2.1
+langgraph==1.1.10
+langgraph-prebuilt==1.0.13
+
+# ---- OpenAI 官方 SDK ----
+# 约束来源：openai-agents 要求 >=2.26,<3；langchain-openai 1.2.1 要求 >=2.26,<3.0。
+# 原先锁的 2.8.1 不在交集内（语义化版本下 2.8.1 < 2.26.0，最容易看漏的一点）。
+openai==2.30.0
+
+# ---- MCP 协议 ----
+# fastmcp 提供 MCP 服务端（main_mcp.py）；mcp 是官方客户端 SDK，
+# services/mcp_adapter.py 直接 import 了它，所以要显式声明 ——
+# 不能只靠 fastmcp 间接带进来，间接依赖随时可能被上游调整掉。
+fastmcp==3.2.4
+mcp==1.27.0
+
+# ---- 后端框架 ----
+fastapi==0.135.2
+uvicorn==0.42.0
+python-dotenv==1.2.2
 Jinja2==3.1.6
-langchain>=1.2.0
-langchain-openai>=1.2.0
-langgraph>=1.1.0
-langgraph-prebuilt>=1.0.0
-numpy<2.0.0
-openai==2.8.1
+
+# ---- 前端 ----
+streamlit==1.55.0
+
+# ---- 数据处理与可视化 ----
 pandas==2.3.3
-plotly==6.3.0
-pydantic==2.12.4
-PyJWT>=2.8.0
-Requests==2.32.5
-SQLAlchemy==2.0.44
-streamlit==1.50.0
-uvicorn==0.38.0
-redis>=5.0.0
-python-dotenv>=1.0.0
+numpy==2.2.6
+plotly==6.7.0
+
+# ---- 数据库与缓存 ----
+SQLAlchemy==2.0.48
+redis==6.4.0
+
+# ---- 认证与网络 ----
+pydantic==2.12.5
+PyJWT==2.12.1
+Requests==2.33.0

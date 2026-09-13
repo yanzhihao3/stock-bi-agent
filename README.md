@@ -37,6 +37,28 @@
 
 ## 快速启动
 
+### 方式一：Docker 一键启动（推荐）
+
+依赖、环境、三个进程全部封装在一个镜像里，构建一次即可在任何装了 Docker 的机器上跑起来。
+
+```bash
+# 1. 准备配置。密钥不进镜像、不进 Git，只在运行时从 .env 注入
+cp .env.example .env
+# 编辑 .env，至少填 OPENAI_API_KEY / AUTOSTOCK_TOKEN / WHYTA_TOKEN / JWT_SECRET
+
+# 2. 构建并启动（容器内：FastAPI 8000 + MCP 8900 + Streamlit 8501）
+docker compose up -d --build
+
+# 3. 查看状态，等 STATUS 从 health: starting 变成 healthy
+docker compose ps
+```
+
+浏览器打开 <http://localhost:8501>。停止用 `docker compose down`。
+
+几个设计要点：只对外暴露 8501，`8000`/`8900` 仅容器内部通信；SQLite 数据挂在 `./assert` 卷上，容器重建不丢；健康检查同时探测三个端口；`restart: unless-stopped` 让容器随 Docker 自动拉起。
+
+### 方式二：手动启动三个进程
+
 ### 1. 安装依赖
 
 ```bash
