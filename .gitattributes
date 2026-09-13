@@ -1,0 +1,27 @@
+# ============================================================
+# 统一行尾：仓库里一律存 LF，避免 Windows(CRLF) / Linux(LF) 来回转换
+#
+# 为什么这事和安全有关：.dockerignore 一旦被检出成 CRLF，每行末尾会多一个 \r，
+# 忽略规则可能因此匹配失败 —— 后果是 .env 不再被排除，真实密钥被打进镜像层，
+# 而且这个泄漏会一直留在构建缓存里。
+# ============================================================
+
+* text=auto
+
+# 必须保持 LF 的文件
+Dockerfile          text eol=lf
+.dockerignore       text eol=lf
+docker-compose.yml  text eol=lf
+*.sh                text eol=lf
+*.yml               text eol=lf
+*.yaml              text eol=lf
+requirements.txt    text eol=lf
+
+# 二进制文件，禁止任何行尾转换
+*.db      binary
+*.sqlite  binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary

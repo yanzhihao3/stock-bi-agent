@@ -1,3 +1,5 @@
+import os
+
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from datetime import datetime
@@ -91,6 +93,14 @@ class UserMemoryTable(Base):
     )
 
 DATABASE_URL = "sqlite:///./assert/sever.db" # 数据库连接地址
+DB_FILE_PATH = "./assert/sever.db"
+
+# SQLite 只会创建"文件"，不会创建"文件所在的目录"。
+# 目录不存在时（全新 clone 的仓库、干净的 CI 环境、新容器），
+# create_all 会直接以「unable to open database file」失败，连 import 都过不去。
+# 所以建表之前先把目录补上，让项目在任何机器上都能从零启动。
+os.makedirs(os.path.dirname(DB_FILE_PATH), exist_ok=True)
+
 # 建立与数据库的连接，是 SQLAlchemy 的核心入口
 engine = create_engine(
     DATABASE_URL,
