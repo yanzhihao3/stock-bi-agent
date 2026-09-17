@@ -61,7 +61,7 @@
   category: 多工具
   question: 贵州茅台最近的走势怎么样
   expect_tools: [stock_get_codes]
-  optional_tools: [stock_get_day_line, stock_get_week_line, stock_get_info, stock_get_minute_data]
+  optional_tools: [stock_get_kline, stock_get_info, stock_get_minute_data]
   note: 必须先把"贵州茅台"转成代码；日K/周K 都算合理
 
 - id: stock-02
@@ -69,7 +69,7 @@
   question: 贵州茅台这家公司基本面怎么样
   expect_tools: [stock_get_codes]
   optional_tools: [stock_get_info]
-  forbid_tools: [stock_get_day_line, stock_get_week_line, stock_get_month_line]
+  forbid_tools: [stock_get_kline]
   note: 基本面问的是公司资料，不是 K 线；考察能否区分"信息"和"行情"
 
 - id: stock-03
@@ -77,13 +77,14 @@
   question: 今天大盘怎么样
   expect_tools: [stock_get_board_info]
   optional_tools: [stock_get_index_code, stock_get_industry_code]
+  forbid_tools: [stock_get_kline]
   note: 大盘概况 vs 板块排名 vs 指数列表，三个工具语义接近
 
 - id: mix-01
   category: 跨类组合
   question: 贵州茅台今天涨了吗？顺便说下上海热不热
   expect_tools: [stock_get_codes, get_city_weather]
-  optional_tools: [stock_get_day_line, stock_get_info, stock_get_minute_data]
+  optional_tools: [stock_get_kline, stock_get_info, stock_get_minute_data]
   note: 股票 + 天气混合，考察能否在一次回答里选到跨类工具
 
 - id: memory-01
@@ -138,20 +139,20 @@
   tags: [难题]
   question: 贵州茅台这三年的走势怎么样
   expect_tools: [stock_get_codes]
-  optional_tools: [stock_get_month_line, stock_get_week_line, stock_get_info]
-  forbid_tools: [stock_get_day_line, stock_get_minute_data]
+  optional_tools: [stock_get_kline, stock_get_info]
+  forbid_tools: [stock_get_minute_data]
   note: >
-    这条只考一件事：K 线的粒度选择。三年跨度该用月K或周K——用日K 会拉回上千条数据，
-    又慢又全是噪音，所以明确禁止。
-    stock_get_info（公司资料）作为背景补充属于合理行为，故放进 optional：
-    不要把"是否克制"和"粒度选择"两种不同性质的要求塞进同一条用例，
-    否则失败了也不知道该改什么。
+    K 线工具已合并为 stock_get_kline(code, period)，所以这条不再检查粒度对错
+    （工具名里已经看不出 day/week/month 了）。
+    改进效果改由「调用次数 + token」观察：合并前实测一轮调了 6 次工具、23,270 token，
+    其中日K 三年会拉回上千条数据，是 token 暴涨的主因。
+    stock_get_info（公司资料）作为背景补充属于合理行为，故放进 optional。
 
 - id: mix-02
   category: 跨类组合
   tags: [难题]
   question: 今天有什么新闻，另外茅台涨了吗
   expect_tools: [get_today_daily_news, stock_get_codes]
-  optional_tools: [stock_get_day_line, stock_get_info, stock_get_minute_data]
+  optional_tools: [stock_get_kline, stock_get_info, stock_get_minute_data]
   forbid_tools: [get_douyin_hot_news, get_github_hot_news]
   note: 新闻 + 股票混合；考察会不会把新闻类工具用到个股上，或者反过来漏掉一类

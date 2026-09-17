@@ -350,21 +350,23 @@ if prompt := st.chat_input(accept_file="multiple", file_type=["txt", "pdf", "jpg
 
             if not error_message:
                 try:
-                    # 6. 只有真正调用了 K 线工具（day/week/month）时才绘制图表
+                    # 6. 只有真正调用了 K 线工具时才绘制图表
                     first_json = re.search(r"```json\s*([\s\S]*?)\s*```", final_text, re.I)
                     if first_json:
                         raw = first_json.group(1).strip()
                         if ":" in raw:
                             tool_name = raw[:raw.index(":")].strip()
-                            # operation_id -> 实际 API 路径映射
+                            # operation_id -> 实际 API 路径映射。
+                            # AI 侧只暴露合并后的 stock_get_kline(code, period)，
+                            # 但 HTTP 层三个粒度路由都还在，所以这里按 period 推导路径。
                             OPERATION_TO_PATH = {
-                                "stock_get_day_line": "get_day_line",
-                                "stock_get_week_line": "get_week_line",
-                                "stock_get_month_line": "get_month_line",
+                                "day": "get_day_line",
+                                "week": "get_week_line",
+                                "month": "get_month_line",
                             }
-                            if tool_name in OPERATION_TO_PATH:
-                                endpoint = OPERATION_TO_PATH[tool_name]
+                            if tool_name == "stock_get_kline":
                                 argv = json.loads(raw[raw.index(":")+1:])
+                                endpoint = OPERATION_TO_PATH.get(argv.get("period", "day"), "get_day_line")
                                 stock_code = argv.get("code", "")
                                 start_date_str = argv.get("startDate", "")
                                 end_date_str = argv.get("endDate", "")

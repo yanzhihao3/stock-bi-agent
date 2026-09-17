@@ -257,3 +257,47 @@ async def get_stock_minute_data(code: Annotated[str, Query(description="股票�
     except Exception:
         logger.exception("get_stock_minute_data failed")
         return error_response("获取分时数据失败")
+
+
+# ---------------------------------------------------------------
+# 合并版 K 线工具 —— 只暴露给 AI；上面三个独立路由保留给前端
+#
+# 为什么要合并：日K / 周K / 月K 三个工具的差异只是一个粒度参数，
+# 模型会把它们全调一遍。实测一次问答连调 day + week + month 三根，
+# 本轮 token 是同类问题的 2.5 倍，而且上千条日K 数据会把上下文冲淡。
+# 合并成带 period 参数的一个工具后，"三选一"的诱惑从结构上消失。
+# ---------------------------------------------------------------
+KLINE_HANDLERS = {
+    "day": get_stock_day_kline,
+    "week": get_stock_week_kline,
+    "month": get_stock_month_kline,
+}
+
+
+@app.get("/get_kline", operation_id="stock_get_kline", tags=["股票分析"])
+async def get_stock_kline(
+    code: Annotated[str, Query(description="股票代码，必须先用 stock_get_codes 查出标准代码")],
+    period: Annotated[str, Query(description="K 线粒度，只能选一个：day=日K（看最近一两个月）、week=周K（看几个月到一两年）、month=月K（看长期趋势）")] = "day",
+    startDate: Annotated[Optional[str], Query(description="开始日期 YYYY-MM-DD；不传默认最近 90 天")] = None,
+    endDate: Annotated[Optional[str], Query(description="结束日期 YYYY-MM-DD；不传默认今天")] = None,
+    type: Annotated[int, Query(description="复权方式：0=不复权（默认），1=前复权，2=后复权")] = 0,
+) -> Dict:
+    """获取某只股票的 K 线走势，粒度由 period 指定。
+
+    一次调用只能选一个粒度 —— 不要为了"看得更全"把 day / week / month 都调一遍。
+    什么时候用：用户问某只股票的走势、涨跌、趋势。
+    period 怎么选：
+      - 问"最近走势""近一个月" → day
+      - 问"最近半年""近一年" → week
+      - 问"这几年""长期趋势" → month
+    什么时候别用：
+      - 问大盘、指数、板块 → 用 stock_get_board_info / stock_get_index_code / stock_get_industry_code
+      - 问公司资料、市值、市盈率 → 用 stock_get_info
+      - 看当天盘中走势 → 用 stock_get_minute_data
+    注意：必须带 code 参数；用户只说了公司名时，先用 stock_get_codes 查代码。"""
+    if period not in KLINE_HANDLERS:
+        return error_response("period 只能是 day / week / month")
+    # 直接复用既有的三个处理函数，不重构它们内部的取数 / 缓存 / 规范化逻辑
+    return await KLINE_HANDLERS[period](
+        code=code, startDate=startDate, endDate=endDate, type=type
+    )

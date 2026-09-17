@@ -3,6 +3,8 @@ import os
 import requests  # type: ignore
 from dotenv import load_dotenv
 from fastmcp import FastMCP, Client
+# 注意 import 路径：fastmcp.server.openapi 已废弃，改用 providers 下的路径
+from fastmcp.server.providers.openapi import RouteMap, MCPType
 
 load_dotenv()
 
@@ -11,8 +13,20 @@ from api.news import mcp as news_mcp
 from api.saying import mcp as saying_mcp
 from api.tool import mcp as tool_mcp
 
-# 将 FastAPI 应用转换为 MCP 服务器 原来 @app.get() 的端点会变成 AI 可调用的工具
-mcp = FastMCP.from_fastapi(app=app)
+# 将 FastAPI 应用转换为 MCP 服务器 原来 @app.get() 的端点会变成 AI 可调用的工具。
+#
+# route_maps 用来把那三个独立的 K 线路由排除出 MCP：
+# 它们的差异只是一个粒度参数（日/周/月），模型会把三根全调一遍，
+# 实测一次问答连调三根，token 是同类问题的 2.5 倍。
+# 现在 AI 只看到合并后的 stock_get_kline(code, period)，
+# 而 /get_day_line 这些 HTTP 路由仍然保留，前端 K 线页面照常可用。
+mcp = FastMCP.from_fastapi(
+    app=app,
+    route_maps=[
+        RouteMap(pattern=r"^/get_(day|week|month)_line$", mcp_type=MCPType.EXCLUDE),
+        RouteMap(pattern=r".*", mcp_type=MCPType.TOOL),
+    ],
+)
 
 
 

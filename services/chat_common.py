@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re
 import sqlite3
 import string
 import time
@@ -72,6 +73,44 @@ def normalize_tool_args(raw: Any) -> Any:
     return raw
 
 
+# 工具调用超限时的提示。抽成常量，是因为统计"回答正文长度"时要把它剔除。
+LIMIT_NOTICE = "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
+
+# 工具调用超限后，用这段提示让模型基于已有数据给出最终回答。
+# 写法参考 nanobot 的 BUDGET_EXHAUSTED_FINALIZATION_PROMPT，三个要点：
+#   1. 明确禁止再调用或请求工具
+#   2. 只允许基于已有数据作答
+#   3. 不许谎称任务已完成 —— 数据不够就说明查到什么、还缺什么
+BUDGET_EXHAUSTED_PROMPT = (
+    "本轮的工具调用次数已达上限。请只根据上面已经获取到的数据和对话，"
+    "直接给出对用户问题的最终回答。不要调用、也不要请求任何工具。"
+    "如果已有数据不足以完整回答，就说明已经查到了什么、还缺什么、"
+    "以及建议用户下一步怎么做。不要在没有依据的情况下声称任务已完成。"
+)
+
+# 连兜底都没能产出内容时的最后一道保险，避免用户对着空白对话
+EMPTY_FINAL_RESPONSE_MESSAGE = (
+    "\n（已经查到部分数据，但这次没能整理出结论。"
+    "可以换个更具体的问法，或者缩小一下范围再试。）"
+)
+
+_TOOL_BLOCK_RE = re.compile(r"```json[\s\S]*?```")
+
+
+def body_chars(text: str) -> int:
+    """去掉工具调用记录和系统提示之后，真正给用户看的**正文**长度。
+
+    为什么要单独统计：assistant_message 里混着工具调用的 JSON 代码块，
+    总长度看着正常（四五百字），但可能一个字正文都没有 ——
+    实测 8 条对话里 6 条如此：用户只看到一串 JSON 加一句"已达上限"，
+    完全拿不到回答。而在此之前，评测只看"调了哪些工具"，压根没发现。
+
+    两个引擎共用这个函数，保证统计口径一致。
+    """
+    body = _TOOL_BLOCK_RE.sub("", text or "")
+    return len(body.replace(LIMIT_NOTICE, "").strip())
+
+
 def clear_agent_session_memory(session_id: Optional[str]) -> None:
     """清空某个会话在 Agents SDK 记忆库（conversations.db）里的4 张表记录全部记录。
 
@@ -95,8 +134,8 @@ def clear_agent_session_memory(session_id: Optional[str]) -> None:
 
 TOOL_CATEGORIES = {
     "股票分析": ["stock_get_codes", "stock_get_index_code", "stock_get_industry_code",
-                "stock_get_board_info", "stock_get_rank", "stock_get_month_line",
-                "stock_get_week_line", "stock_get_day_line", "stock_get_info", "stock_get_minute_data"],
+                "stock_get_board_info", "stock_get_rank", "stock_get_kline",
+                "stock_get_info", "stock_get_minute_data"],
     "新闻聚合": ["get_today_daily_news", "get_douyin_hot_news", "get_github_hot_news",
                 "get_toutiao_hot_news", "get_sports_news"],
     "通用工具": ["get_city_weather", "get_address_detail", "get_tel_info",
