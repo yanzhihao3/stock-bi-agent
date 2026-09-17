@@ -19,10 +19,16 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from models.orm import SessionLocal, UserTable
 
-JWT_SECRET = os.environ.get(
-    "JWT_SECRET",
-    "change_me_to_a_long_random_secret_at_least_32_bytes",
-)
+# 刻意不给默认值：此前这里有一串公开常量兜底，部署时忘记设置 JWT_SECRET 也能照常启动，
+# 而那串字符串写在 GitHub 上人人可见 —— 任何人都能用它签出 role=管理员 的令牌，
+# 绕过全部鉴权。宁可启动时明确失败，也不要静默降级到一个人人皆知的密钥。
+JWT_SECRET = os.environ.get("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "必须设置 JWT_SECRET 环境变量（参考 .env.example）。\n"
+        "生成方式：python -c \"import secrets; print(secrets.token_hex(32))\"\n"
+        "注意：改这个值会让所有已签发的登录令牌立即失效。"
+    )
 JWT_ALGORITHM = "HS256"
 # 默认 24 小时，可通过环境变量调整
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "1440"))
@@ -114,4 +120,3 @@ def require_admin(user: UserTable = Depends(get_current_user)) -> UserTable:
     if user.user_role != "管理员":
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return user
-

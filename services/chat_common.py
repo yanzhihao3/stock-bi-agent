@@ -21,7 +21,14 @@ from services.memory import get_memory_section
 
 logger = logging.getLogger(__name__)
 
-TIMESTAMP_SECRET = os.environ.get("TIMESTAMP_SECRET", "default_secret_change_in_production")
+# 与 JWT_SECRET 同理：不给默认值。这个密钥用于给系统提示词里的时间戳签名，
+# 一旦用了公开的默认串，别人就能伪造时间戳、往提示词里注入伪造的"当前时间"。
+TIMESTAMP_SECRET = os.environ.get("TIMESTAMP_SECRET")
+if not TIMESTAMP_SECRET:
+    raise RuntimeError(
+        "必须设置 TIMESTAMP_SECRET 环境变量（参考 .env.example）。\n"
+        "生成方式：python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
 
 MAX_HISTORY_MESSAGES = 20  # 双引擎共享：多轮上下文滑窗条数，超出丢弃最老
 
