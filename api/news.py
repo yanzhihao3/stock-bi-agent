@@ -19,7 +19,10 @@ mcp = FastMCP(
 
 @mcp.tool(tags={"新闻聚合"}) # # 装饰器，声明这是一个AI可调用的工具
 def get_today_daily_news():
-    """Retrieves a list of today's daily news bulletin items from the external API."""
+    """获取今天的时政财经要闻简报（每日大事汇总）。
+    什么时候用：用户问"今天有什么新闻""最近发生什么大事""有什么要闻"。
+    什么时候别用：问娱乐热搜用 get_douyin_hot_news，问技术热点用 get_github_hot_news，
+                  问社会综合热点用 get_toutiao_hot_news，问比赛用 get_sports_news。"""
     try:
         # 1. 发送请求并解析 JSON
         # 2. 精准提取数据列表 (例如 ["result"]["list"])
@@ -32,7 +35,9 @@ def get_today_daily_news():
 
 @mcp.tool(tags={"新闻聚合"})
 def get_douyin_hot_news():
-    """Retrieves a list of trending topics or hot news from Douyin (TikTok China) using the API."""
+    """获取抖音热搜榜（娱乐八卦、网红动态、流行话题）。
+    什么时候用：用户问"抖音上在聊什么""有什么娱乐热搜""最近什么梗火"。
+    什么时候别用：问正经新闻要闻用 get_today_daily_news。"""
     try:
         return requests.get(f"https://whyta.cn/api/tx/douyinhot?key={TOKEN}", timeout=5).json()["result"]["list"]
     except:
@@ -43,7 +48,8 @@ def get_douyin_hot_news():
 
 @mcp.tool(tags={"新闻聚合"})
 def get_github_hot_news():
-    """Retrieves a list of trending repositories/projects on GitHub using the API."""
+    """获取 GitHub 热榜（近期最热门的开源项目，技术圈风向）。
+    什么时候用：用户问"最近有什么火的开源项目""技术圈在关注什么"。"""
     print("\n" + "=" * 50)
     print("[DEBUG] 开始调用 get_github_hot_news")
 
@@ -91,7 +97,9 @@ def get_github_hot_news():
 
 @mcp.tool(tags={"新闻聚合"})
 def get_toutiao_hot_news(): # 今日头条热点
-    """Retrieves a list of hot news headlines from Toutiao (a Chinese news platform) using the API."""
+    """获取今日头条热榜（社会新闻、综合热点排行）。
+    什么时候用：用户问"今天有什么热点""最近大家都在讨论什么"。
+    什么时候别用：问时政财经要闻用 get_today_daily_news，问娱乐用 get_douyin_hot_news。"""
     try:
         return requests.get(f"https://whyta.cn/api/tx/topnews?key={TOKEN}", timeout=5).json()["result"]["list"]
     except:
@@ -101,7 +109,8 @@ def get_toutiao_hot_news(): # 今日头条热点
 
 @mcp.tool(tags={"新闻聚合"})
 def get_sports_news():
-    """Retrieves a list of esports or general sports news items using the external API."""
+    """获取电竞/体育新闻。
+    什么时候用：用户问"最近有什么比赛""电竞圈新闻""体育赛事"。"""
     try:
         return requests.get(f"https://whyta.cn/api/tx/esports?key={TOKEN}", timeout=5).json()["result"]["newslist"]
     except:

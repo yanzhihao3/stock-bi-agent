@@ -15,7 +15,7 @@ import json
 from datetime import date, timedelta
 from typing import Annotated
 from typing import Optional, Dict
-from fastapi import FastAPI, APIRouter  # type: ignore
+from fastapi import FastAPI, APIRouter, Query  # type: ignore
 
 from services.schema_normalizer import (
     success_response,
@@ -64,9 +64,12 @@ app = FastAPI(
 
 @app.get("/get_stock_code", operation_id="stock_get_codes", tags=["股票分析"])
 async def get_all_stock_code(
-        keyword: Annotated[Optional[str], "支持代码和名称模糊查询"] = None
+        keyword: Annotated[Optional[str], Query(description="股票代码或名称的关键字，支持模糊匹配；不传则返回全部股票")] = None
 ) -> Dict:
-    """所有股票，支持代码和名称模糊查询"""
+    """查询股票代码和名称：按关键字模糊搜索，返回匹配的股票列表。
+    什么时候用：用户提到某只股票（如"茅台""贵州茅台"）时，先用这个工具查出它的标准代码，
+              其余股票类工具都需要这个 code。
+    什么时候别用：查指数用 stock_get_index_code。"""
     url = "https://api.autostock.cn/v1/stock/all" + "?token=" + TOKEN
     if keyword:
         url += "&keyWord=" + keyword
@@ -82,7 +85,9 @@ async def get_all_stock_code(
 
 @app.get("/get_index_code", operation_id="stock_get_index_code", tags=["股票分析"])
 async def get_all_index_code():
-    """所有指数，支持代码和名称模糊查询"""
+    """获取所有市场指数（上证指数、深证成指、创业板指等）的代码和名称。
+    什么时候用：用户问"大盘指数""某个指数叫什么代码"。
+    注意：这个工具没有搜索参数，会返回全部指数。"""
     url = "https://api.autostock.cn/v1/stock/index/all" + "?token=" + TOKEN
     try:
         raw_data = await cached_get(url, ttl=3600, timeout=TIMEOUT_5)
@@ -95,7 +100,8 @@ async def get_all_index_code():
 
 @app.get("/get_industry_code", operation_id="stock_get_industry_code", tags=["股票分析"])
 async def get_stock_industry_code():
-    """获取板块数据"""
+    """获取行业板块的行情排名（各板块涨跌幅、资金流向）。
+    什么时候用：用户问"今天哪个板块涨得好""行业排行""哪个行业最强"。"""
     url = "https://api.autostock.cn/v1/stock/industry/rank" + "?token=" + TOKEN
     try:
         response = await cached_get(url, ttl=600, timeout=TIMEOUT_5)
@@ -107,7 +113,11 @@ async def get_stock_industry_code():
 
 @app.get("/get_board_info", operation_id="stock_get_board_info", tags=["股票分析"])
 async def get_stock_board_info():
-    """获取大盘数据"""
+    """获取大盘整体概况（主要指数涨跌、成交额、涨跌家数等市场总览）。
+    什么时候用：用户问"今天大盘怎么样""市场整体行情如何"。
+    注意：这是整个市场的视角，不针对某只个股。回答大盘问题时，
+          用本工具（需要时加 stock_get_industry_code 看板块）就够了，
+          不要再调用个股的 K 线类工具。"""
     url = "https://api.autostock.cn/v1/stock/board" + "?token=" + TOKEN
     try:
         raw = await cached_get(url, ttl=300, timeout=TIMEOUT_5)
@@ -120,14 +130,15 @@ async def get_stock_board_info():
 
 @app.get("/get_stock_rank", operation_id="stock_get_rank", tags=["股票分析"])
 async def get_stock_rank(
-        node: Annotated[str, "股票市场/板块代码: {'a','b','ash','asz','bsh','bsz'} a(沪深A股)"],
-        industryCode: Annotated[Optional[str], "行业代码，可选"] = None,
-        pageIndex: Annotated[int, "页码"] = 1,
-        pageSize: Annotated[int, "每页大小"] = 100,
-        sort: Annotated[str, "排序字段"] = "price",
-        asc: Annotated[int, "排序方式: 0=降序(默认), 1=升序"] = 0
+        node: Annotated[str, Query(description="市场代码，必填。可选值：a=沪深A股（默认用途）、b=北交所、ash=沪A、asz=深A、bsh=沪B、bsz=深B")],
+        industryCode: Annotated[Optional[str], Query(description="限定行业板块的代码，不传表示不限行业。行业代码可用 stock_get_industry_code 查")] = None,
+        pageIndex: Annotated[int, Query(description="页码，从 1 开始")] = 1,
+        pageSize: Annotated[int, Query(description="每页返回多少条")] = 100,
+        sort: Annotated[str, Query(description="排序字段，例如 price（按价格）")] = "price",
+        asc: Annotated[int, Query(description="排序方向：0=降序（默认），1=升序")] = 0
 ) -> Dict:
-    """股票排行"""
+    """股票排行榜：按指定字段排序返回股票列表。
+    什么时候用：用户问"涨幅榜""今天涨得最好的股票""排行榜前几名"。"""
     url = "https://api.autostock.cn/v1/stock/rank" + "?token=" + TOKEN
     payload = {
         "node": node,
@@ -146,12 +157,14 @@ async def get_stock_rank(
 
 @app.get("/get_month_line", operation_id="stock_get_month_line", tags=["股票分析"])
 async def get_stock_month_kline(
-        code: Annotated[str, "股票代码"],
-        startDate: Annotated[Optional[str], "开始时间(非必填)"] = None,
-        endDate: Annotated[Optional[str], "结束时间(非必填)"] = None,
-        type: Annotated[int, "0不复权,1前复权,2后复权"] = 0
+        code: Annotated[str, Query(description="股票代码，必须先用 stock_get_codes 查出标准代码")],
+        startDate: Annotated[Optional[str], Query(description="开始日期，格式 YYYY-MM-DD；不传默认最近 90 天")] = None,
+        endDate: Annotated[Optional[str], Query(description="结束日期，格式 YYYY-MM-DD；不传默认今天")] = None,
+        type: Annotated[int, Query(description="复权方式：0=不复权（默认），1=前复权，2=后复权")] = 0
 ) -> Dict:
-    """月k"""
+    """获取月 K 线（每月一根），适合看长期趋势。
+    什么时候用：用户想看几年的大趋势、长期走势。
+    什么时候别用：看近期走势用 stock_get_day_line，看中期用 stock_get_week_line。"""
     startDate, endDate = _ensure_kline_dates(startDate, endDate)
     url = "https://api.autostock.cn/v1/stock/kline/month" + "?token=" + TOKEN
     try:
@@ -165,12 +178,14 @@ async def get_stock_month_kline(
 
 @app.get("/get_week_line", operation_id="stock_get_week_line", tags=["股票分析"])
 async def get_stock_week_kline(
-        code: Annotated[str, "股票代码"],
-        startDate: Annotated[Optional[str], "开始时间(非必填)"] = None,
-        endDate: Annotated[Optional[str], "结束时间(非必填)"] = None,
-        type: Annotated[int, "0不复权,1前复权,2后复权"] = 0
+        code: Annotated[str, Query(description="股票代码，必须先用 stock_get_codes 查出标准代码")],
+        startDate: Annotated[Optional[str], Query(description="开始日期，格式 YYYY-MM-DD；不传默认最近 90 天")] = None,
+        endDate: Annotated[Optional[str], Query(description="结束日期，格式 YYYY-MM-DD；不传默认今天")] = None,
+        type: Annotated[int, Query(description="复权方式：0=不复权（默认），1=前复权，2=后复权")] = 0
 ):
-    """周k"""
+    """获取周 K 线（每周一根），适合看中期趋势。
+    什么时候用：用户想看最近几个月到一两年的走势。
+    什么时候别用：看长期用 stock_get_month_line，看短期用 stock_get_day_line。"""
     startDate, endDate = _ensure_kline_dates(startDate, endDate)
     url = "https://api.autostock.cn/v1/stock/kline/week" + "?token=" + TOKEN
     try:
@@ -184,12 +199,20 @@ async def get_stock_week_kline(
 
 @app.get("/get_day_line", operation_id="stock_get_day_line", tags=["股票分析"])
 async def get_stock_day_kline(
-        code: Annotated[str, "股票代码"],
-        startDate: Annotated[Optional[str], "开始时间(非必填)"] = None,
-        endDate: Annotated[Optional[str], "结束时间(非必填)"] = None,
-        type: Annotated[int, "0不复权,1前复权,2后复权"] = 0
+        code: Annotated[str, Query(description="股票代码，必须先用 stock_get_codes 查出标准代码")],
+        startDate: Annotated[Optional[str], Query(description="开始日期，格式 YYYY-MM-DD；不传默认最近 90 天")] = None,
+        endDate: Annotated[Optional[str], Query(description="结束日期，格式 YYYY-MM-DD；不传默认今天")] = None,
+        type: Annotated[int, Query(description="复权方式：0=不复权（默认），1=前复权，2=后复权")] = 0
 ) -> Dict:
-    """日k"""
+    """获取「某一只具体股票」的日 K 线（每天一根）。
+    使用前提：必须已经拿到具体的股票代码。用户只说了公司名（如"贵州茅台"）时，
+              先用 stock_get_codes 查到代码，再调用本工具。
+    什么时候用：用户问某只股票的"最近走势""近一个月涨了多少"。
+    什么时候别用：
+      - 问大盘、指数、板块行情 → 用 stock_get_board_info / stock_get_index_code / stock_get_industry_code
+      - 问公司资料、市值、市盈率等基本面 → 用 stock_get_info
+      - 看更长跨度 → stock_get_week_line / stock_get_month_line；看当天盘中 → stock_get_minute_data
+    本工具必须带 code 参数；没有具体股票代码就不要调用。"""
     startDate, endDate = _ensure_kline_dates(startDate, endDate)
     url = "https://api.autostock.cn/v1/stock/kline/day" + "?token=" + TOKEN
     try:
@@ -202,8 +225,10 @@ async def get_stock_day_kline(
 
 
 @app.get("/get_stock_info", operation_id="stock_get_info", tags=["股票分析"])
-async def get_stock_info(code: Annotated[str, "股票代码"]) -> Dict:
-    """股票基础信息"""
+async def get_stock_info(code: Annotated[str, Query(description="股票代码，必须先用 stock_get_codes 查出标准代码")]) -> Dict:
+    """获取股票的基础信息（公司名称、所属行业、市值、市盈率等基本面数据）。
+    什么时候用：用户问"这家公司是做什么的""市值多少""市盈率多少""基本面怎么样"。
+    提示：问基本面时，"查到代码 + 本工具"就够了，不需要再查 K 线行情数据。"""
     url = "https://api.autostock.cn/v1/stock" + "?token=" + TOKEN + "&code=" + code
     try:
         raw_data = await cached_get(url, ttl=600, timeout=BASE_TIMEOUT)
@@ -217,8 +242,10 @@ async def get_stock_info(code: Annotated[str, "股票代码"]) -> Dict:
 
 
 @app.get("/get_stock_minute_data", operation_id="stock_get_minute_data", tags=["股票分析"])
-async def get_stock_minute_data(code: str):
-    """分时信息"""
+async def get_stock_minute_data(code: Annotated[str, Query(description="股票代码，必须先用 stock_get_codes 查出标准代码")]):
+    """获取当日的分时数据（盘中每分钟的价格与成交量走势）。
+    什么时候用：用户问"今天的盘中走势""分时图""现在什么价格"。
+    什么时候别用：看历史走势用 stock_get_day_line。"""
     url = "https://api.autostock.cn/v1/stock/min" + "?token=" + TOKEN + "&code=" + code
     try:
         raw = await cached_get(url, ttl=30, timeout=BASE_TIMEOUT)
