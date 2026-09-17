@@ -24,6 +24,10 @@ from services.chat_common import (
     MAX_HISTORY_MESSAGES,
     append_trace,
     normalize_tool_args,
+    body_chars,
+    LIMIT_NOTICE,
+    BUDGET_EXHAUSTED_PROMPT,
+    EMPTY_FINAL_RESPONSE_MESSAGE,
 )
 from services.memory import schedule_memory_extraction
 from services.mcp_adapter import MCPClientManager
@@ -70,6 +74,9 @@ async def chat(
         "session_id": session_id,
         "tool_calls": [],
         "answer_chars": 0,
+        "body_chars": 0,
+        "truncated": False,
+        "stop_reason": "completed",
         "elapsed_ms": None,
         "error": None,
     }
@@ -153,6 +160,8 @@ async def chat(
         # 工具调用上限：单次问答最多允许的工具调用次数（可用环境变量调整）
         MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", "5"))
         assistant_message = ""
+        # 收集本轮的工具返回，超限时用来兜底总结
+        tool_outputs: List[str] = []
 
         # 使用 astream_events 获取细粒度事件
         async for event in agent.astream_events(
@@ -165,7 +174,8 @@ async def chat(
             if kind == "on_tool_start":
                 # 超限检查放在最先，避免"先宣告第 N+1 次调用再截停"的边界问题
                 if tool_call_count >= MAX_TOOL_CALLS:
-                    msg = "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
+                    trace["truncated"] = True
+                    msg = LIMIT_NOTICE
                     yield msg
                     assistant_message += msg
                     break
@@ -176,6 +186,13 @@ async def chat(
                 args_json = json.dumps(tool_input, ensure_ascii=False) if isinstance(tool_input, dict) else str(tool_input)
                 yield f"\n```json\n{tool_name}:{args_json}\n```\n\n"
                 assistant_message += f"\n```json\n{tool_name}:{args_json}\n```\n\n"
+
+            # 工具执行结果 — 收集起来给兜底总结用
+            if kind == "on_tool_end":
+                out = event.get("data", {}).get("output")
+                if out is not None:
+                    text = getattr(out, "content", None) or str(out)
+                    tool_outputs.append(str(text))
 
             # LLM 文本流 — 始终流式输出；工具执行完后模型会继续生成最终回答
             if kind == "on_chat_model_stream":
@@ -191,6 +208,27 @@ async def chat(
                 yield text
                 assistant_message += text
 
+        # 超限了 → 与 agents 引擎同样的兜底：禁止再调工具，基于已有数据作答。
+        # 差别在于 langchain 的会话历史存在数据库里、不含本轮工具的原始返回，
+        # 所以这里要把本轮收集到的工具输出显式拼进提示。
+        if trace["truncated"]:
+            trace["stop_reason"] = "max_tool_calls"
+            hint = BUDGET_EXHAUSTED_PROMPT
+            if tool_outputs:
+                joined = "\n---\n".join(tool_outputs)[:8000]
+                hint += "\n\n【本轮已获取的工具数据（超长已截断）】\n" + joined
+            final_messages = [SystemMessage(content=instructions)]
+            final_messages.extend(_build_history_messages(session_id, user_name, content))
+            final_messages.append(HumanMessage(content=hint))
+            async for chunk in llm.astream(final_messages):
+                text = chunk.content if hasattr(chunk, "content") and chunk.content else ""
+                if text:
+                    yield text
+                    assistant_message += text
+            if body_chars(assistant_message) == 0:
+                yield EMPTY_FINAL_RESPONSE_MESSAGE
+                assistant_message += EMPTY_FINAL_RESPONSE_MESSAGE
+
         try:
             append_message2db(session_id, "assistant", assistant_message)
         except Exception:
@@ -200,5 +238,6 @@ async def chat(
     finally:
         await mcp_manager.disconnect() # 手动 disconnect()。
         trace["answer_chars"] = len(assistant_message)
+        trace["body_chars"] = body_chars(assistant_message)
         trace["elapsed_ms"] = int((time.perf_counter() - trace_started) * 1000)
         append_trace(trace)

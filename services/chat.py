@@ -24,6 +24,10 @@ from services.chat_common import (
     MAX_HISTORY_MESSAGES,
     append_trace,
     normalize_tool_args,
+    body_chars,
+    LIMIT_NOTICE,
+    BUDGET_EXHAUSTED_PROMPT,
+    EMPTY_FINAL_RESPONSE_MESSAGE,
 )
 from services.memory import schedule_memory_extraction
 
@@ -45,6 +49,42 @@ set_tracing_disabled(True)
 # 失败时的友好兜底文案：不把异常裸抛给前端，也不让记忆库留下半截工具序列
 FALLBACK_MESSAGE = "抱歉，我这边出了点问题，暂时没能完成这个请求。你可以换个说法再试一次～"
 
+async def _finalize_after_limit(client, instructions: str, session, trace: dict):
+    """工具调用超限后的兜底：禁止再调工具，让模型把已获取的数据总结成回答。
+
+    背景：原实现在超限时直接 break，而 break 跳出的是"消费模型流式事件"的循环，
+    模型再也没机会生成最终回答 —— 用户只会看到一串工具调用的 JSON 加一句
+    "已达上限"，一个字正文都没有（实测 8 条对话里 6 条如此）。
+
+    做法参考 nanobot 的 finalize_on_max_iterations：预算耗尽后，
+    再发一次**不带任何工具**的请求，让模型基于已有上下文作答。
+    """
+    summary_agent = Agent(
+        name="Assistant",
+        instructions=instructions,
+        model=OpenAIChatCompletionsModel(
+            model=os.environ["OPENAI_MODEL"],
+            openai_client=client,
+        ),
+        model_settings=ModelSettings(temperature=0, include_usage=True),
+    )
+    result = Runner.run_streamed(
+        summary_agent, input=BUDGET_EXHAUSTED_PROMPT, session=session
+    )
+    async for event in result.stream_events():
+        if event.type == "raw_response_event" and hasattr(event, "data") \
+                and isinstance(event.data, ResponseTextDeltaEvent):
+            if event.data.delta:
+                yield event.data.delta
+
+    # 把这次兜底调用的用量累加进轨迹，否则成本统计会漏掉这一轮
+    extra = _extract_usage(result)
+    if extra:
+        base = trace.get("usage") or {}
+        trace["usage"] = {
+            key: (base.get(key) or 0) + (extra.get(key) or 0)
+            for key in ("input_tokens", "output_tokens", "total_tokens")
+        }
 
 def _extract_usage(result) -> dict:
     """汇总本次运行的 token 用量（用于估算成本）。取不到就返回空字典。
@@ -149,6 +189,9 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
         "session_id": session_id,
         "tool_calls": [],
         "answer_chars": 0,
+        "body_chars": 0,
+        "truncated": False,
+        "stop_reason": "completed",
         "elapsed_ms": None,
         "error": None,
     }
@@ -268,8 +311,9 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                                 "args": normalize_tool_args(event.data.item.arguments),
                             })
                             if tool_call_count > MAX_TOOL_CALLS:
-                                yield "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
-                                assistant_message += "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
+                                trace["truncated"] = True
+                                yield LIMIT_NOTICE
+                                assistant_message += LIMIT_NOTICE
                                 break
                             yield "\n```json\n" + event.data.item.name + ":" \
                                   + event.data.item.arguments + "\n" + "```\n\n"
@@ -283,6 +327,17 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                         assistant_message += event.data.delta
 
                 trace["usage"] = _extract_usage(result)
+                # 超限了 → 补一次不带工具的最终回答，别让用户对着空白
+                if trace["truncated"]:
+                    trace["stop_reason"] = "max_tool_calls"
+                    async for delta in _finalize_after_limit(
+                            external_client, instructions, agent_session, trace):
+                        yield delta
+                        assistant_message += delta
+                    if body_chars(assistant_message) == 0:
+                        # 兜底也失败了：至少给一句可读的话
+                        yield EMPTY_FINAL_RESPONSE_MESSAGE
+                        assistant_message += EMPTY_FINAL_RESPONSE_MESSAGE
                 try:
                     append_message2db(session_id, "assistant", assistant_message)
                 except Exception:
@@ -301,5 +356,6 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
         clear_agent_session_memory(session_id)
     finally:
         trace["answer_chars"] = len(assistant_message)
+        trace["body_chars"] = body_chars(assistant_message)
         trace["elapsed_ms"] = int((time.perf_counter() - trace_started) * 1000)
         append_trace(trace)

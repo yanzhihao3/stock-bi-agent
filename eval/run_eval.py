@@ -218,6 +218,13 @@ async def run_case(chat_fn, case: dict, trace_path: Path, verbose: bool) -> dict
     result["elapsed_ms"] = traces[-1].get("elapsed_ms") if traces else None
     # token 用量：两个引擎都尽力采集，采不到就留 None（不影响其它指标）
     result["usage"] = (traces[-1].get("usage") or {}) if traces else {}
+    # 这轮调了几个工具。和 token 一起看，能验证"少调工具"的改进效果 ——
+    # 它比"工具名对不对"更贴近真实影响：调用越多、token 越高、上下文越脏。
+    result["tool_call_count"] = len(traces[-1].get("tool_calls") or []) if traces else 0
+    # 回答正文长度与是否触发工具上限。这两个字段用来发现"工具选对了、但用户拿不到回答"，
+    # 那类问题只看工具调用集合是完全看不出来的。
+    result["body_chars"] = (traces[-1].get("body_chars") or 0) if traces else 0
+    result["truncated"] = bool(traces[-1].get("truncated")) if traces else False
     result["trace_missing"] = not traces
     if traces and traces[-1].get("error"):
         result["error"] = traces[-1]["error"]
@@ -260,6 +267,21 @@ def print_report(results: list[dict], engine: str) -> float:
         print(f"闲聊准确率   {small_ok}/{len(small)}   {small_ok / len(small):.1%}")
     if elapsed:
         print(f"平均耗时               {sum(elapsed) / len(elapsed) / 1000:.1f}s")
+    counted = [r.get("tool_call_count") or 0 for r in results
+               if not r["trace_missing"] and not r["error"]]
+    if counted:
+        print(f"平均工具调用数         {sum(counted) / len(counted):.1f} 个/条")
+    if counted:
+        avg_body = sum(r.get("body_chars") or 0 for r in results
+                       if not r["trace_missing"] and not r["error"]) / len(counted)
+        print(f"平均回答正文           {avg_body:.0f} 字")
+    empty = [r for r in results
+             if not r["trace_missing"] and not r["error"] and (r.get("body_chars") or 0) < 10]
+    truncated = [r for r in results
+                 if not r["trace_missing"] and not r["error"] and r.get("truncated")]
+    print(f"空回答（正文<10字）     {len(empty)} 条"
+          + ("   ← 用户拿不到回答" if empty else ""))
+    print(f"触发工具调用上限        {len(truncated)} 条")
     total_tokens = sum((r.get("usage") or {}).get("total_tokens") or 0 for r in results)
     if total_tokens:
         print(f"累计 token             {total_tokens:,}      （成本可据此估算）")
@@ -296,6 +318,17 @@ def print_report(results: list[dict], engine: str) -> float:
                 print(f"      违禁调用: {r['violated']}")
             if r["note"]:
                 print(f"      出题意图: {r['note']}")
+
+    # 单独列一组：工具选对了、但回答是空的。这类问题不影响"工具选择准确率"，
+    # 却直接影响用户 —— 只有把它单列出来，才不会被漂亮的总分掩盖。
+    if empty:
+        print("-" * 62)
+        print("回答为空的用例（工具可能选对了，但用户拿不到回答）")
+        for r in empty:
+            print(f"  ! {r['id']}  {r['question']}")
+            print(f"      工具调用 {r.get('tool_call_count', 0)} 次"
+                  f"，正文 {r.get('body_chars', 0)} 字"
+                  f"{'，触发了工具上限' if r.get('truncated') else ''}")
     print("=" * 62)
     return strict / n
 
