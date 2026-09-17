@@ -94,3 +94,64 @@
   expect_tools: []
   forbid_tools: [__any__]
   note: 答案应该来自上文记忆而不是工具；考察多轮上下文与长期记忆是否生效
+
+# ---------------------------------------------------------------
+# 以下用例专门用来制造"干扰"：要么问题模糊，要么句子里埋了
+# 容易误触发工具的线索。前面那批容易满分，这批才是区分度所在。
+# ---------------------------------------------------------------
+
+- id: amb-01
+  category: 易混淆
+  tags: [难题]
+  question: 最近有什么消息
+  expect_tools: [get_today_daily_news]
+  optional_tools: [get_toutiao_hot_news]
+  forbid_tools: [stock_*]
+  note: 没给上下文时按通用新闻理解；但绝不能去查股票——歧义句最容易触发这类误判
+
+- id: disturb-01
+  category: 干扰
+  tags: [难题]
+  question: 介绍一下上海这个城市
+  expect_tools: []
+  forbid_tools: [get_city_weather]
+  note: 句子里有"上海"，极易误触发天气工具；这里问的是城市介绍，凭已有知识回答即可
+
+- id: calc-01
+  category: 边界
+  tags: [难题]
+  question: 100 除以 3 等于多少
+  expect_tools: []
+  forbid_tools: [__any__]
+  note: 纯计算，模型自己能算；调用任何工具都是错的
+
+- id: chat-03
+  category: 闲聊
+  tags: [难题]
+  question: 你觉得人生的意义是什么
+  expect_tools: []
+  forbid_tools: [__any__]
+  note: 开放性闲聊容易诱发"名言鸡汤"类工具误触发
+
+- id: stock-04
+  category: 易混淆
+  tags: [难题]
+  question: 贵州茅台这三年的走势怎么样
+  expect_tools: [stock_get_codes]
+  optional_tools: [stock_get_month_line, stock_get_week_line, stock_get_info]
+  forbid_tools: [stock_get_day_line, stock_get_minute_data]
+  note: >
+    这条只考一件事：K 线的粒度选择。三年跨度该用月K或周K——用日K 会拉回上千条数据，
+    又慢又全是噪音，所以明确禁止。
+    stock_get_info（公司资料）作为背景补充属于合理行为，故放进 optional：
+    不要把"是否克制"和"粒度选择"两种不同性质的要求塞进同一条用例，
+    否则失败了也不知道该改什么。
+
+- id: mix-02
+  category: 跨类组合
+  tags: [难题]
+  question: 今天有什么新闻，另外茅台涨了吗
+  expect_tools: [get_today_daily_news, stock_get_codes]
+  optional_tools: [stock_get_day_line, stock_get_info, stock_get_minute_data]
+  forbid_tools: [get_douyin_hot_news, get_github_hot_news]
+  note: 新闻 + 股票混合；考察会不会把新闻类工具用到个股上，或者反过来漏掉一类

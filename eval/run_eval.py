@@ -48,6 +48,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--set", dest="set_path", default=str(DEFAULT_SET))
     p.add_argument("--trace-path", default=str(DEFAULT_TRACE))
     p.add_argument("--limit", type=int, default=0, help="只跑前 N 条（0 表示全部）")
+    p.add_argument("--category", default=None,
+                   help="只跑指定类别，逗号分隔，例如：--category 易混淆,闲聊（日常迭代用）")
+    p.add_argument("--tag", default=None,
+                   help="只跑带指定标签的用例，逗号分隔，例如：--tag 难题（快速冒烟用）")
+    p.add_argument("--id", dest="ids", default=None,
+                   help="只跑指定用例，逗号分隔，例如：--id stock-02,stock-03（改完重跑失败项）")
+    p.add_argument("--repeat", type=int, default=1,
+                   help="每个用例重复跑 N 次。边界用例本身有波动，跑一次说明不了问题，"
+                        "例如：--id stock-04 --repeat 3")
     p.add_argument("--min-accuracy", type=float, default=None,
                    help="严格准确率低于该值时退出码为 1（供 CI 做门禁）")
     p.add_argument("--quiet", action="store_true", help="不打印过程，只出报告")
@@ -120,9 +129,20 @@ def judge(case: dict, tool_names: list[str]) -> dict:
     actual = set(tool_names)
     allowed = expect | optional
 
+    # 多调 = 调用了不在「期望 ∪ 可选」里的工具
+    unexpected = actual - allowed
     missed = sorted(expect - actual)
-    extra = sorted(actual - allowed)
-    violated = sorted(actual) if FORBID_ANY in forbid else sorted(actual & forbid)
+    extra = sorted(unexpected)
+
+    # 违禁 = 「多调」里被 forbid 点名的那些。
+    # 关键：拿 unexpected 去匹配，而不是拿 actual —— 否则 expect 与 forbid 一旦有重叠
+    # （作者笔误，或用了 stock_* 这类通配符），本该调用的工具也会被判成违禁，
+    # 报出一个让人摸不着头脑的失败。forbid 只该管"多调"。
+    # 支持通配符：写 stock_* 表示整类股票工具，省得把 10 个工具名一个个列出来。
+    if FORBID_ANY in forbid:
+        violated = sorted(unexpected)
+    else:
+        violated = sorted(_expand(forbid, unexpected))
 
     if expect:
         recall = len(expect & actual) / len(expect)
@@ -141,6 +161,18 @@ def judge(case: dict, tool_names: list[str]) -> dict:
         "expect": sorted(expect),
         "optional": sorted(optional),
     }
+
+
+def _expand(patterns: set[str], actual: set[str]) -> set[str]:
+    """把 forbid 里的通配符模式展开成实际命中的工具名。"""
+    hit: set[str] = set()
+    for pattern in patterns:
+        if pattern.endswith("*"):
+            prefix = pattern[:-1]
+            hit |= {name for name in actual if name.startswith(prefix)}
+        elif pattern in actual:
+            hit.add(pattern)
+    return hit
 
 
 # ---------------------------------------------------------------- 主流程
@@ -184,6 +216,8 @@ async def run_case(chat_fn, case: dict, trace_path: Path, verbose: bool) -> dict
     result["question"] = case["question"]
     result["note"] = case.get("note", "")
     result["elapsed_ms"] = traces[-1].get("elapsed_ms") if traces else None
+    # token 用量：两个引擎都尽力采集，采不到就留 None（不影响其它指标）
+    result["usage"] = (traces[-1].get("usage") or {}) if traces else {}
     result["trace_missing"] = not traces
     if traces and traces[-1].get("error"):
         result["error"] = traces[-1]["error"]
@@ -226,6 +260,11 @@ def print_report(results: list[dict], engine: str) -> float:
         print(f"闲聊准确率   {small_ok}/{len(small)}   {small_ok / len(small):.1%}")
     if elapsed:
         print(f"平均耗时               {sum(elapsed) / len(elapsed) / 1000:.1f}s")
+    total_tokens = sum((r.get("usage") or {}).get("total_tokens") or 0 for r in results)
+    if total_tokens:
+        print(f"累计 token             {total_tokens:,}      （成本可据此估算）")
+    else:
+        print("累计 token             —            （引擎未返回 usage）")
     if broken:
         print(f"无轨迹/报错            {len(broken)} 条")
 
@@ -287,6 +326,21 @@ def prepare(args: argparse.Namespace) -> tuple[Any, list[dict], Path]:
     cases = yaml.safe_load(set_path.read_text(encoding="utf-8"))
     if args.limit:
         cases = cases[: args.limit]
+    if args.category:
+        wanted = {c.strip() for c in args.category.split(",") if c.strip()}
+        cases = [c for c in cases if c.get("category") in wanted]
+        if not cases:
+            sys.exit(f"[中断] 没有匹配的类别：{args.category}")
+    if args.tag:
+        wanted = {t.strip() for t in args.tag.split(",") if t.strip()}
+        cases = [c for c in cases if wanted & set(c.get("tags") or [])]
+        if not cases:
+            sys.exit(f"[中断] 没有匹配的标签：{args.tag}")
+    if args.ids:
+        wanted = {i.strip() for i in args.ids.split(",") if i.strip()}
+        cases = [c for c in cases if c.get("id") in wanted]
+        if not cases:
+            sys.exit(f"[中断] 没有匹配的用例 id：{args.ids}")
 
     if args.engine == "agents":
         from services.chat import chat as chat_fn
@@ -304,27 +358,30 @@ def main() -> None:
 
     results = []
     for case in cases:
-        try:
-            # 每条用例跑在独立的事件循环里。
-            #
-            # 踩过的坑：langchain 引擎的 MCP SSE 客户端在同一条长生命周期的循环里
-            # 反复 connect/disconnect 时，会出 "Attempted to exit cancel scope in a
-            # different task than it was entered in"，那个取消还会打穿到外层，
-            # 把整轮评测带走。换成一条一份循环，最坏情况也只是这一条失败。
-            results.append(asyncio.run(run_case(chat_fn, case, trace_path, not args.quiet)))
-        except BaseException as exc:
-            # 单条失败不该中断整轮评测。
-            # 注意这里必须是 BaseException：Python 3.8+ 的 asyncio.CancelledError
-            # 继承自 BaseException 而不是 Exception，用 except Exception 抓不到，
-            # 结果就是一条崩溃把整轮评测带走（langchain 引擎实际发生过）。
-            results.append({
-                "id": case.get("id", "?"), "category": case.get("category", "未分类"),
-                "question": case.get("question", ""), "note": case.get("note", ""),
-                "strict_ok": False, "recall": 0.0, "precision": 0.0,
-                "missed": [], "extra": [], "violated": [], "actual": [], "expect": [],
-                "elapsed_ms": None, "trace_missing": True, "error": f"{type(exc).__name__}: {exc}",
-            })
-            print(f"  ! {case.get('id')} 执行异常: {type(exc).__name__}: {exc}")
+        for attempt in range(1, args.repeat + 1):
+            if args.repeat > 1 and not args.quiet:
+                print(f"  第 {attempt}/{args.repeat} 次")
+            try:
+                # 每条用例跑在独立的事件循环里。
+                #
+                # 踩过的坑：langchain 引擎的 MCP SSE 客户端在同一条长生命周期的循环里
+                # 反复 connect/disconnect 时，会出 "Attempted to exit cancel scope in a
+                # different task than it was entered in"，那个取消还会打穿到外层，
+                # 把整轮评测带走。换成一条一份循环，最坏情况也只是这一条失败。
+                results.append(asyncio.run(run_case(chat_fn, case, trace_path, not args.quiet)))
+            except BaseException as exc:
+                # 单条失败不该中断整轮评测。
+                # 注意这里必须是 BaseException：Python 3.8+ 的 asyncio.CancelledError
+                # 继承自 BaseException 而不是 Exception，用 except Exception 抓不到，
+                # 结果就是一条崩溃把整轮评测带走（langchain 引擎实际发生过）。
+                results.append({
+                    "id": case.get("id", "?"), "category": case.get("category", "未分类"),
+                    "question": case.get("question", ""), "note": case.get("note", ""),
+                    "strict_ok": False, "recall": 0.0, "precision": 0.0,
+                    "missed": [], "extra": [], "violated": [], "actual": [], "expect": [],
+                    "elapsed_ms": None, "trace_missing": True, "error": f"{type(exc).__name__}: {exc}",
+                })
+                print(f"  ! {case.get('id')} 执行异常: {type(exc).__name__}: {exc}")
 
     accuracy = print_report(results, args.engine)
     if args.min_accuracy is not None and accuracy < args.min_accuracy:
