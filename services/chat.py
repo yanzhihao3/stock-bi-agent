@@ -46,6 +46,42 @@ set_tracing_disabled(True)
 FALLBACK_MESSAGE = "抱歉，我这边出了点问题，暂时没能完成这个请求。你可以换个说法再试一次～"
 
 
+def _extract_usage(result) -> dict:
+    """汇总本次运行的 token 用量（用于估算成本）。取不到就返回空字典。
+
+    两个坑：
+    1. RunResultStreaming 本身没有 usage 字段 —— 用量分散在 raw_responses 里
+       （每次模型调用一条），必须自己累加。
+    2. 光累加还不够，得配合 ModelSettings(include_usage=True)：SDK 的默认值是
+       `True if 客户端是 OpenAI else None`，也就是说用第三方 base_url 时它压根不向
+       服务端索要 usage，累加出来永远是空。见 agents/models/chatcmpl_helpers.py。
+
+    刻意写成"取不到也不报错"：token 统计是附加值，不能因为它影响对话。
+    """
+    try:
+        responses = getattr(result, "raw_responses", None) or []
+        in_tok = out_tok = total_tok = 0
+        found = False
+        for response in responses:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                continue
+            found = True
+            in_tok += getattr(usage, "input_tokens", 0) or 0
+            out_tok += getattr(usage, "output_tokens", 0) or 0
+            total_tok += getattr(usage, "total_tokens", 0) or 0
+        if not found:
+            return {}
+        return {
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "total_tokens": total_tok or (in_tok + out_tok),
+        }
+    except Exception:
+        logger.exception("extract usage failed")
+        return {}
+
+
 def _legalize_history(items: List[dict]) -> List[dict]:
     """清洗历史窗口，避免悬空工具序列把模型请求打挂。
 
@@ -178,7 +214,9 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                 # temperature=0：固定采样，让同一个问题每次得到一致的工具选择。
                 # 评测必须先保证"测量可靠"，否则两次跑出来的差异分不清是改动造成的还是随机波动。
                 # 另一套引擎 langchain_chat.py 本来就用 temperature=0，这里对齐。
-                model_settings=ModelSettings(parallel_tool_calls=False, temperature=0),
+                # include_usage：第三方 base_url 下 SDK 默认不索要 token 用量，得显式打开
+                model_settings=ModelSettings(parallel_tool_calls=False, temperature=0,
+                                             include_usage=True),
             )
             result = Runner.run_streamed(agent, input=content, session=agent_session)
             assistant_message = ""
@@ -188,6 +226,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                         if event.data.delta:
                             yield event.data.delta
                             assistant_message += event.data.delta
+            trace["usage"] = _extract_usage(result)
             try:
                 append_message2db(session_id, "assistant", assistant_message)
             except Exception:
@@ -211,7 +250,8 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                     # 否则这一轮只有工具调用没有答案，要等下一轮才显示
                     tool_use_behavior="run_llm_again",
                     # temperature=0：理由同上，评测要可复现（与 langchain 引擎对齐）
-                    model_settings=ModelSettings(parallel_tool_calls=False, temperature=0),
+                    model_settings=ModelSettings(parallel_tool_calls=False, temperature=0,
+                                                 include_usage=True),
                 )
 
                 result = Runner.run_streamed(agent, input=content, session=agent_session)
@@ -242,6 +282,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                         yield event.data.delta
                         assistant_message += event.data.delta
 
+                trace["usage"] = _extract_usage(result)
                 try:
                     append_message2db(session_id, "assistant", assistant_message)
                 except Exception:

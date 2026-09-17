@@ -104,6 +104,8 @@ async def chat(
         base_url=os.environ["OPENAI_BASE_URL"],
         temperature=0,
         streaming=True,
+        # 打开流式下的 token 用量统计：默认关闭，开启后最后一个 chunk 会带 usage_metadata
+        stream_usage=True,
     )
 
     # === 4. 连接 MCP 并获取 LangChain 工具 ===
@@ -122,6 +124,13 @@ async def chat(
             assistant_message = ""
             async for chunk in llm.astream(messages): # ← 直接调 LLM，没有 Agent
                 text = chunk.content if hasattr(chunk, "content") and chunk.content else ""
+                meta = getattr(chunk, "usage_metadata", None)
+                if meta:
+                    trace["usage"] = {
+                        "input_tokens": meta.get("input_tokens"),
+                        "output_tokens": meta.get("output_tokens"),
+                        "total_tokens": meta.get("total_tokens"),
+                    }
                 if text:
                     yield text
                     assistant_message += text
@@ -172,6 +181,13 @@ async def chat(
             if kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk", {})
                 text = chunk.content if hasattr(chunk, "content") and chunk.content else ""
+                meta = getattr(chunk, "usage_metadata", None)
+                if meta:
+                    trace["usage"] = {
+                        "input_tokens": meta.get("input_tokens"),
+                        "output_tokens": meta.get("output_tokens"),
+                        "total_tokens": meta.get("total_tokens"),
+                    }
                 yield text
                 assistant_message += text
 
