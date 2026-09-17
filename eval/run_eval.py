@@ -384,29 +384,33 @@ def prepare(args: argparse.Namespace) -> tuple[Any, list[dict], Path]:
     return chat_fn, cases, trace_path
 
 
-def main() -> None:
-    args = parse_args()
-    check_mcp()
-    chat_fn, cases, trace_path = prepare(args)
+async def run_all(chat_fn, cases: list[dict], trace_path: Path,
+                  repeat: int, verbose: bool) -> list[dict]:
+    """在**一个**事件循环里跑完全部用例。
 
-    results = []
+    为什么必须是同一个循环：MCP 连接现在是进程级共享的（见
+    mcp_adapter.get_mcp_manager），而它绑定在创建它的那个事件循环上。
+
+    踩过的坑：之前为隔离 langchain 的取消传播，改成"每条用例一个 asyncio.run"。
+    连接改成共享之后这两件事就打架了 —— 前一条用例跑完时 asyncio.run 退出，
+    会调用 loop.shutdown_asyncgens() 把**共享连接里的异步生成器一起收掉**，
+    后面每条用例都拿到 ClosedResourceError（实测：第一条通过，后两条全挂）。
+
+    现在连接不再每轮重建，当初导致取消传播的根源已经消失，
+    所以回到"一个循环跑到底"，并在同一个任务里显式收尾。
+    """
+    results: list[dict] = []
     for case in cases:
-        for attempt in range(1, args.repeat + 1):
-            if args.repeat > 1 and not args.quiet:
-                print(f"  第 {attempt}/{args.repeat} 次")
+        for attempt in range(1, repeat + 1):
+            if repeat > 1 and verbose:
+                print(f"  第 {attempt}/{repeat} 次")
             try:
-                # 每条用例跑在独立的事件循环里。
-                #
-                # 踩过的坑：langchain 引擎的 MCP SSE 客户端在同一条长生命周期的循环里
-                # 反复 connect/disconnect 时，会出 "Attempted to exit cancel scope in a
-                # different task than it was entered in"，那个取消还会打穿到外层，
-                # 把整轮评测带走。换成一条一份循环，最坏情况也只是这一条失败。
-                results.append(asyncio.run(run_case(chat_fn, case, trace_path, not args.quiet)))
+                results.append(await run_case(chat_fn, case, trace_path, verbose))
             except BaseException as exc:
                 # 单条失败不该中断整轮评测。
-                # 注意这里必须是 BaseException：Python 3.8+ 的 asyncio.CancelledError
+                # 注意必须是 BaseException：Python 3.8+ 的 asyncio.CancelledError
                 # 继承自 BaseException 而不是 Exception，用 except Exception 抓不到，
-                # 结果就是一条崩溃把整轮评测带走（langchain 引擎实际发生过）。
+                # 结果是一条崩溃把整轮带走（langchain 引擎实际发生过）。
                 results.append({
                     "id": case.get("id", "?"), "category": case.get("category", "未分类"),
                     "question": case.get("question", ""), "note": case.get("note", ""),
@@ -415,6 +419,26 @@ def main() -> None:
                     "elapsed_ms": None, "trace_missing": True, "error": f"{type(exc).__name__}: {exc}",
                 })
                 print(f"  ! {case.get('id')} 执行异常: {type(exc).__name__}: {exc}")
+
+    # 收尾：在同一个循环、同一个任务里关掉共享连接。
+    # 不关的话，解释器退出时它会被 GC 在别的任务里收尾，刷出一堆 cancel scope 报错。
+    try:
+        from services.mcp_adapter import get_mcp_manager
+        await get_mcp_manager().disconnect()
+    except Exception:
+        pass
+
+    return results
+
+
+def main() -> None:
+    args = parse_args()
+    check_mcp()
+    chat_fn, cases, trace_path = prepare(args)
+
+    results = asyncio.run(
+        run_all(chat_fn, cases, trace_path, args.repeat, not args.quiet)
+    )
 
     accuracy = print_report(results, args.engine)
     if args.min_accuracy is not None and accuracy < args.min_accuracy:

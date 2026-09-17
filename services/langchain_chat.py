@@ -30,7 +30,7 @@ from services.chat_common import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
 )
 from services.memory import schedule_memory_extraction
-from services.mcp_adapter import MCPClientManager
+from services.mcp_adapter import get_mcp_manager
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,8 @@ async def chat(
     )
 
     # === 4. 连接 MCP 并获取 LangChain 工具 ===
-    mcp_manager = MCPClientManager("http://localhost:8900/sse")
+    # 进程级共享连接，不再每轮新建/断开（原因见 get_mcp_manager 的说明）
+    mcp_manager = get_mcp_manager()
 
     try:
         await mcp_manager.connect()  # 手动连接 MCP
@@ -236,7 +237,12 @@ async def chat(
         schedule_memory_extraction(user_name)
 
     finally:
-        await mcp_manager.disconnect() # 手动 disconnect()。
+        # 注意：这里刻意**不再**调用 mcp_manager.disconnect()。
+        # 原先每轮断开会造成两个后果：
+        #   1. 下一个请求重新建一个 sse_client 上下文，旧上下文被 GC 时在别的任务里关闭，
+        #      触发 "Attempted to exit cancel scope in a different task" 并把当前连接一起取消；
+        #   2. 重复的握手和 list_tools 白白浪费。
+        # 现在连接由 get_mcp_manager() 持有、随进程存活，单次对话结束只需要落盘轨迹。
         trace["answer_chars"] = len(assistant_message)
         trace["body_chars"] = body_chars(assistant_message)
         trace["elapsed_ms"] = int((time.perf_counter() - trace_started) * 1000)

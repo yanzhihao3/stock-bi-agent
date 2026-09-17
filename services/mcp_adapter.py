@@ -29,17 +29,33 @@ class MCPClientManager:
         self._write: Optional[Any] = None
         self._connected = False
         self._tools_cache: Optional[list] = None
+        # 建连锁：防止并发请求各建一条连接、互相覆盖 self._sse_ctx。
+        # 连接改成进程级共享之后就多了这个风险 ——
+        # "检查 _connected → 建连接"这个序列本身没有原子性。
+        self._connect_lock = asyncio.Lock()
 
     async def connect(self):
-        """建立 MCP SSE 连接"""
+        """建立 MCP SSE 连接（并发安全）。
+
+        为什么需要锁：两个请求同时进来时，都会看到 self._connected 是 False，
+        于是各自建一条 SSE 连接并写入 self._sse_ctx —— 后写的覆盖先写的，
+        被覆盖的那条随即变成垃圾，GC 在别的 asyncio 任务里清理它时会报
+        "Attempted to exit cancel scope in a different task"，
+        并且把当时正在使用的连接一起取消掉。
+        实测：共享连接下并发 2 路必现（ClosedResourceError / CancelledError）。
+        """
         if self._connected:
             return
-        self._sse_ctx = sse_client(self._server_url)
-        self._read, self._write = await self._sse_ctx.__aenter__()
-        self._session = ClientSession(self._read, self._write)
-        await self._session.__aenter__()
-        await self._session.initialize()
-        self._connected = True
+        async with self._connect_lock:
+            # 双重检查：等锁的这段时间里，别的请求可能已经把连接建好了
+            if self._connected:
+                return
+            self._sse_ctx = sse_client(self._server_url)
+            self._read, self._write = await self._sse_ctx.__aenter__()
+            self._session = ClientSession(self._read, self._write)
+            await self._session.__aenter__()
+            await self._session.initialize()
+            self._connected = True
 
     async def disconnect(self):
         """关闭 MCP 连接"""
@@ -168,3 +184,39 @@ class MCPClientManager:
             "object": dict,
         }
         return mapping.get(json_type, str)
+
+
+# ---------------------------------------------------------------
+# 进程级共享的 MCP 连接
+#
+# 注意：这一段必须放在文件的**最末尾**（类定义全部结束之后）。
+# 上次插在类体中间，导致类后面那几个方法被当成新函数的函数体，
+# 结果 MCPClientManager 直接丢了 get_langchain_tools 等方法 ——
+# 而且 py_compile 检查不出来，因为缩进在语法上是合法的。
+# ---------------------------------------------------------------
+_default_manager: Optional[MCPClientManager] = None
+
+
+def get_mcp_manager(server_url: str = "http://localhost:8900/sse") -> MCPClientManager:
+    """返回进程内共享的 MCP 连接管理器（懒创建）。
+
+    为什么要有这个函数 —— 原来每次对话都新建一个 manager、用完 disconnect()，
+    问题不在于多拉一次工具列表这点开销，而在于：
+
+      connect() / disconnect() 是被**手工**调用的 async context manager。
+      断开之后，下一个请求会新建一个 sse_client 上下文，旧的那个随即变成垃圾；
+      当 GC 在**另一个 asyncio 任务**里关闭它时，就会报
+      "Attempted to exit cancel scope in a different task than it was entered in"，
+      并且把当时正在进行的连接一起取消掉 —— langchain 引擎跑评测就是这样崩的。
+
+    改成进程级共享后：
+      1. 连接不再每轮重建，省掉重复的 SSE 握手与 list_tools；
+      2. 那个上下文对象始终被这个单例引用着，永远不会被 GC —— 崩溃的机理从根上消失。
+
+    注意：共享之后多个请求共用一个 MCP 会话，并发安全需要实测
+    （ClientSession 用请求 ID 匹配响应，理论上支持并发）。
+    """
+    global _default_manager
+    if _default_manager is None:
+        _default_manager = MCPClientManager(server_url)
+    return _default_manager
