@@ -1,0 +1,96 @@
+# 工具选择评测集（黄金问题集）
+#
+# 用法：python eval/run_eval.py --engine agents
+#
+# 字段说明
+#   id           条目标识，报告里按它列失败明细
+#   category     类别，用于分类统计（先看哪一类最差）
+#   question     发给模型的问题
+#   setup        可选，多轮场景的前置对话（同一会话内先发这些，再发 question）
+#   expect_tools 必须被调用的工具（漏调 = 错）
+#   optional_tools 调了算对、不调也不算错（给模型留合理的替代解法）
+#   forbid_tools 不能被调用的工具；写 [__any__] 表示"一个工具都不许调"
+#   note         为什么这么出题，方便以后维护
+#
+# 出题原则
+#   1. 只写工具集合，不写调用顺序 —— 先查代码还是先查行情不该算错
+#   2. 区分"必须调"和"可选"，避免把合理但不同的解法判为错误
+#   3. 重点覆盖最容易混的工具组：新闻五兄弟、K 线三兄弟
+
+- id: chat-01
+  category: 闲聊
+  question: 你好呀
+  expect_tools: []
+  forbid_tools: [__any__]
+  note: 打招呼不该触发任何工具，这是最容易被模型做错的一类
+
+- id: chat-02
+  category: 闲聊
+  question: 帮我写一首关于春天的小诗
+  expect_tools: []
+  forbid_tools: [__any__]
+  note: 纯生成任务不需要任何工具
+
+- id: tool-01
+  category: 单工具
+  question: 上海今天天气怎么样
+  expect_tools: [get_city_weather]
+  note: 唯一正确答案，用来验证最基本的工具选择
+
+- id: tool-02
+  category: 单工具
+  question: 100 美元能换多少人民币
+  expect_tools: [get_rate_transform]
+  note: 汇率换算，货币要用三位代码
+
+- id: news-01
+  category: 易混淆
+  question: 今天有什么新闻
+  expect_tools: [get_today_daily_news]
+  forbid_tools: [get_douyin_hot_news, get_toutiao_hot_news, get_github_hot_news]
+  note: 新闻类 5 个工具最容易混；泛问"新闻/要闻"应优先每日简报
+
+- id: news-02
+  category: 易混淆
+  question: 最近有什么火的开源项目
+  expect_tools: [get_github_hot_news]
+  forbid_tools: [get_today_daily_news, get_douyin_hot_news]
+  note: 技术类热点应该走 GitHub 热榜，不是综合新闻
+
+- id: stock-01
+  category: 多工具
+  question: 贵州茅台最近的走势怎么样
+  expect_tools: [stock_get_codes]
+  optional_tools: [stock_get_day_line, stock_get_week_line, stock_get_info, stock_get_minute_data]
+  note: 必须先把"贵州茅台"转成代码；日K/周K 都算合理
+
+- id: stock-02
+  category: 易混淆
+  question: 贵州茅台这家公司基本面怎么样
+  expect_tools: [stock_get_codes]
+  optional_tools: [stock_get_info]
+  forbid_tools: [stock_get_day_line, stock_get_week_line, stock_get_month_line]
+  note: 基本面问的是公司资料，不是 K 线；考察能否区分"信息"和"行情"
+
+- id: stock-03
+  category: 易混淆
+  question: 今天大盘怎么样
+  expect_tools: [stock_get_board_info]
+  optional_tools: [stock_get_index_code, stock_get_industry_code]
+  note: 大盘概况 vs 板块排名 vs 指数列表，三个工具语义接近
+
+- id: mix-01
+  category: 跨类组合
+  question: 贵州茅台今天涨了吗？顺便说下上海热不热
+  expect_tools: [stock_get_codes, get_city_weather]
+  optional_tools: [stock_get_day_line, stock_get_info, stock_get_minute_data]
+  note: 股票 + 天气混合，考察能否在一次回答里选到跨类工具
+
+- id: memory-01
+  category: 记忆
+  question: 我刚才问的是哪只股票
+  setup:
+    - 贵州茅台最近的走势怎么样
+  expect_tools: []
+  forbid_tools: [__any__]
+  note: 答案应该来自上文记忆而不是工具；考察多轮上下文与长期记忆是否生效
