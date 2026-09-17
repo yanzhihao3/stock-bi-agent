@@ -15,6 +15,7 @@
 # ---- 本地数据：用户表、对话记录、备份，运行时全部走卷挂载 ----
 assert/
 backups/
+logs/
 *.db
 *.sqlite
 *.db-journal
