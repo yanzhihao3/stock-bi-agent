@@ -2,10 +2,11 @@
 
 import os
 import logging
+import time
 import traceback
 from typing import List, Optional
 
-from agents import Agent, Runner, OpenAIChatCompletionsModel, ModelSettings
+from agents import Agent, Runner, OpenAIChatCompletionsModel, ModelSettings, set_tracing_disabled
 from agents.extensions.memory import AdvancedSQLiteSession
 from agents.memory import SessionSettings
 from agents.mcp import MCPServerSse, ToolFilterStatic
@@ -21,10 +22,25 @@ from services.chat_common import (
     generate_random_chat_id,
     init_chat_session,
     MAX_HISTORY_MESSAGES,
+    append_trace,
+    normalize_tool_args,
 )
 from services.memory import schedule_memory_extraction
 
 logger = logging.getLogger(__name__)
+
+# 关闭 Agents SDK 默认开启的 trace 上传。
+#
+# SDK 的默认行为：每次对话都把完整轨迹（含用户输入、工具调用）上传到 OpenAI 的接口，
+# 并用 OPENAI_API_KEY 鉴权。而本项目的 base_url 和 key 都是第三方（DeepSeek）的，
+# 上传必然失败，只留下三个副作用：
+#   1. 日志刷满 [non-fatal] Tracing: request failed，把真正的报错淹掉
+#   2. 进程退出时要等重试队列跑完，评测和 CI 凭空变慢
+#   3. key 和对话内容被发往境外服务器（换成真实 OpenAI key 后更严重）
+#
+# 本项目自己的运行轨迹由 services/chat_common.py 的 append_trace() 记录，与本功能无关，
+# 关掉它不影响评测。
+set_tracing_disabled(True)
 
 # 失败时的友好兜底文案：不把异常裸抛给前端，也不让记忆库留下半截工具序列
 FALLBACK_MESSAGE = "抱歉，我这边出了点问题，暂时没能完成这个请求。你可以换个说法再试一次～"
@@ -88,6 +104,21 @@ class SafeSQLiteSession(AdvancedSQLiteSession):
 
 async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                content: str, tools: List[str] = None):
+    # 运行轨迹：记录本轮"模型调用了哪些工具"，供离线评测使用。
+    # 写在 finally 里统一落盘，确保正常结束、异常兜底、提前 return 三种情况都能留下记录。
+    trace = {
+        "engine": "agents",
+        "question": content,
+        "task": task,
+        "session_id": session_id,
+        "tool_calls": [],
+        "answer_chars": 0,
+        "elapsed_ms": None,
+        "error": None,
+    }
+    trace_started = time.perf_counter()
+    assistant_message = ""
+
     # 检查会话是否存在
     if session_id:
         from models.orm import SessionLocal, ChatSessionTable as CST
@@ -144,7 +175,10 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                     model=os.environ["OPENAI_MODEL"],
                     openai_client=external_client,
                 ),
-                model_settings=ModelSettings(parallel_tool_calls=False), # 控制是否允许多个工具调用并行执行
+                # temperature=0：固定采样，让同一个问题每次得到一致的工具选择。
+                # 评测必须先保证"测量可靠"，否则两次跑出来的差异分不清是改动造成的还是随机波动。
+                # 另一套引擎 langchain_chat.py 本来就用 temperature=0，这里对齐。
+                model_settings=ModelSettings(parallel_tool_calls=False, temperature=0),
             )
             result = Runner.run_streamed(agent, input=content, session=agent_session)
             assistant_message = ""
@@ -176,7 +210,8 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                     # 工具执行完后必须让模型再生成最终回答；不要 stop_on_first_tool，
                     # 否则这一轮只有工具调用没有答案，要等下一轮才显示
                     tool_use_behavior="run_llm_again",
-                    model_settings=ModelSettings(parallel_tool_calls=False), # 控制是否允许多个工具调用并行执行
+                    # temperature=0：理由同上，评测要可复现（与 langchain 引擎对齐）
+                    model_settings=ModelSettings(parallel_tool_calls=False, temperature=0),
                 )
 
                 result = Runner.run_streamed(agent, input=content, session=agent_session)
@@ -188,6 +223,10 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                         if isinstance(event.data.item, ResponseFunctionToolCall):
                             current_tool_name = event.data.item.name
                             tool_call_count += 1
+                            trace["tool_calls"].append({
+                                "name": current_tool_name,
+                                "args": normalize_tool_args(event.data.item.arguments),
+                            })
                             if tool_call_count > MAX_TOOL_CALLS:
                                 yield "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
                                 assistant_message += "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
@@ -210,6 +249,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                 schedule_memory_extraction(user_name)
     except Exception:
         logger.exception("chat run failed for session %s", session_id)
+        trace["error"] = "run_failed"
         # 失败兜底：给用户一段友好文案，而不是静默/报错
         yield FALLBACK_MESSAGE
         try:
@@ -218,3 +258,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
             logger.exception("failed to persist fallback message")
         # 清掉该会话记忆库里的残留，避免脏数据影响下一轮
         clear_agent_session_memory(session_id)
+    finally:
+        trace["answer_chars"] = len(assistant_message)
+        trace["elapsed_ms"] = int((time.perf_counter() - trace_started) * 1000)
+        append_trace(trace)

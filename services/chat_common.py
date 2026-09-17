@@ -27,6 +27,51 @@ MAX_HISTORY_MESSAGES = 20  # 双引擎共享：多轮上下文滑窗条数，超
 AGENT_DB_PATH = "./assert/conversations.db"
 
 
+# 运行轨迹文件：一行一条 JSON，供离线评测「模型是否选对了工具」使用。
+# 可用环境变量 TRACE_PATH 覆盖（评测脚本用它隔离每次跑批的记录）。
+TRACE_PATH = os.environ.get("TRACE_PATH", "./logs/traces.jsonl")
+
+
+def append_trace(record: Dict[str, Any]) -> None:
+    """把一次对话的运行轨迹追加到 JSONL 文件。
+
+    设计上有三点考虑：
+    1. 只追加、不改动、不读取，天然适合并发写入，也方便事后逐行分析；
+    2. 内部吞掉所有异常 —— 记录轨迹失败绝不能影响正常对话；
+    3. 记录的是「模型调用了哪些工具」，而不是工具返回了什么，
+       所以第三方接口挂了、限流了、甚至断网，都不影响评测结论。
+
+    两个引擎（Agents SDK / LangChain）共用这一个函数。
+    """
+    try:
+        directory = os.path.dirname(TRACE_PATH)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        record.setdefault("ts", datetime.now().isoformat(timespec="seconds"))
+        with open(TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        # 刻意不抛出：轨迹记录是旁路功能，不能因为它让对话失败
+        logger.exception("append_trace failed")
+
+
+def normalize_tool_args(raw: Any) -> Any:
+    """把工具调用参数统一成「对象」形式，再落盘。
+
+    踩过的坑：两个引擎给出的原始格式不一致 ——
+      * Agents SDK 的 ResponseFunctionToolCall.arguments 是 JSON 字符串
+      * LangChain 的 on_tool_start 事件给的是 dict
+    原样存储的话，评测脚本就得写两套解析逻辑，还容易埋出"某个引擎的参数永远比对不上"
+    这种不报错却静默失真的问题。这里统一：能解析成 JSON 就转成对象，否则原样返回。
+    """
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+    return raw
+
+
 def clear_agent_session_memory(session_id: Optional[str]) -> None:
     """清空某个会话在 Agents SDK 记忆库（conversations.db）里的4 张表记录全部记录。
 
@@ -55,7 +100,7 @@ TOOL_CATEGORIES = {
     "新闻聚合": ["get_today_daily_news", "get_douyin_hot_news", "get_github_hot_news",
                 "get_toutiao_hot_news", "get_sports_news"],
     "通用工具": ["get_city_weather", "get_address_detail", "get_tel_info",
-                "get_flower_info", "get_rate_transform"],
+                "get_scenic_info", "get_flower_info", "get_rate_transform"],
     "名言鸡汤": ["get_today_familous_saying", "get_today_motivation_saying", "get_today_working_saying"],
 }
 

@@ -6,6 +6,7 @@
 import json
 import logging
 import os
+import time
 from typing import AsyncGenerator, List, Optional
 
 from langchain_openai import ChatOpenAI
@@ -21,6 +22,8 @@ from services.chat_common import (
     init_chat_session,
     get_chat_sessions,
     MAX_HISTORY_MESSAGES,
+    append_trace,
+    normalize_tool_args,
 )
 from services.memory import schedule_memory_extraction
 from services.mcp_adapter import MCPClientManager
@@ -59,6 +62,20 @@ async def chat(
     """LangChain 版对话核心（接口与 agents 版本一致）"""
 
     # === 1. 会话初始化 ===
+    # 运行轨迹：与 services/chat.py 保持同样的字段结构，便于评测脚本统一处理
+    trace = {
+        "engine": "langchain",
+        "question": content,
+        "task": task,
+        "session_id": session_id,
+        "tool_calls": [],
+        "answer_chars": 0,
+        "elapsed_ms": None,
+        "error": None,
+    }
+    trace_started = time.perf_counter()
+    assistant_message = ""
+
     if session_id:
         from models.orm import SessionLocal, ChatSessionTable as CST
         with SessionLocal() as session:
@@ -146,6 +163,7 @@ async def chat(
                 tool_call_count += 1
                 tool_input = event.get("data", {}).get("input", {})
                 tool_name = event.get("name", "unknown")
+                trace["tool_calls"].append({"name": tool_name, "args": normalize_tool_args(tool_input)})
                 args_json = json.dumps(tool_input, ensure_ascii=False) if isinstance(tool_input, dict) else str(tool_input)
                 yield f"\n```json\n{tool_name}:{args_json}\n```\n\n"
                 assistant_message += f"\n```json\n{tool_name}:{args_json}\n```\n\n"
@@ -165,3 +183,6 @@ async def chat(
 
     finally:
         await mcp_manager.disconnect() # 手动 disconnect()。
+        trace["answer_chars"] = len(assistant_message)
+        trace["elapsed_ms"] = int((time.perf_counter() - trace_started) * 1000)
+        append_trace(trace)

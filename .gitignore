@@ -27,5 +27,8 @@ assert/*.db-*
 # --- Backups（含旧数据，不提交） ---
 backups/
 
+# --- 运行轨迹（评测用日志，属本地数据） ---
+logs/
+
 # --- Project specific ---
 docs/
