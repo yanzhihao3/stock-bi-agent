@@ -1,5 +1,6 @@
 """AI 对话核心 — OpenAI Agents SDK 引擎"""
 
+import json
 import os
 import logging
 import time
@@ -8,6 +9,7 @@ from typing import List, Optional
 
 from agents import Agent, Runner, OpenAIChatCompletionsModel, ModelSettings, set_tracing_disabled
 from agents.extensions.memory import AdvancedSQLiteSession
+from agents.items import ToolCallOutputItem
 from agents.memory import SessionSettings
 from agents.mcp import MCPServerSse, ToolFilterStatic
 from openai import AsyncOpenAI
@@ -24,6 +26,7 @@ from services.chat_common import (
     MAX_HISTORY_MESSAGES,
     append_trace,
     normalize_tool_args,
+    truncate_for_trace,
     body_chars,
     LIMIT_NOTICE,
     BUDGET_EXHAUSTED_PROMPT,
@@ -122,6 +125,44 @@ def _extract_usage(result) -> dict:
         return {}
 
 
+def _extract_tool_results(result, names: Optional[List[str]] = None) -> List[dict]:
+    """把本轮工具返回的内容（截断后）记进轨迹，供离线核对「回答里的数字对不对」。
+
+    数据来源是运行结束后的 result.new_items：
+      * ToolCallItem        —— 模型发起的调用
+      * ToolCallOutputItem  —— 工具返回，.output 就是工具真实返回值
+
+    名字按**调用顺序**对齐，而不是靠 call_id 去配对。原因：本项目 Agent 设了
+    parallel_tool_calls=False，工具是串行执行的，所以 new_items 里"第 i 个工具返回"
+    必然对应调用列表里"第 i 次调用"。实测（`--id stock-01`）chat-completions 模式下
+    ToolCallItem 的 raw_item 上并不总能取到 call_id，靠它配对会全是 unknown。
+
+    和 _extract_usage 一样刻意写成"取不到也不报错"：轨迹是旁路功能，
+    不能因为它影响正常对话。
+    """
+    try:
+        items = getattr(result, "new_items", None) or []
+
+        outputs = []
+        for item in items:
+            if not isinstance(item, ToolCallOutputItem):
+                continue
+            output = item.output
+            if not isinstance(output, str):
+                output = json.dumps(output, ensure_ascii=False, default=str)
+            outputs.append(truncate_for_trace(output))
+
+        # 调用次数可能比返回多一条（超限那次只记录、没执行），多出来的名字用不上
+        names = names or []
+        return [
+            {"name": names[i] if i < len(names) else "unknown", "output": output}
+            for i, output in enumerate(outputs)
+        ]
+    except Exception:
+        logger.exception("extract tool results failed")
+        return []
+
+
 def _legalize_history(items: List[dict]) -> List[dict]:
     """清洗历史窗口，避免悬空工具序列把模型请求打挂。
 
@@ -188,6 +229,11 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
         "task": task,
         "session_id": session_id,
         "tool_calls": [],
+        # 工具返回的内容（截断后）。tool_calls 只记"调了哪个工具、传了什么参数"，
+        # 这里补上"工具回了什么"，离线才能核对回答里的数字有没有依据。
+        "tool_results": [],
+        # 本轮完整回答（含工具调用 JSON 块）。离线核对时先用 answer_body() 剥掉 JSON。
+        "answer": "",
         "answer_chars": 0,
         "body_chars": 0,
         "truncated": False,
@@ -327,6 +373,9 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
                         assistant_message += event.data.delta
 
                 trace["usage"] = _extract_usage(result)
+                trace["tool_results"] = _extract_tool_results(
+                    result, [call["name"] for call in trace["tool_calls"]]
+                )
                 # 超限了 → 补一次不带工具的最终回答，别让用户对着空白
                 if trace["truncated"]:
                     trace["stop_reason"] = "max_tool_calls"
@@ -355,6 +404,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
         # 清掉该会话记忆库里的残留，避免脏数据影响下一轮
         clear_agent_session_memory(session_id)
     finally:
+        trace["answer"] = assistant_message
         trace["answer_chars"] = len(assistant_message)
         trace["body_chars"] = body_chars(assistant_message)
         trace["elapsed_ms"] = int((time.perf_counter() - trace_started) * 1000)

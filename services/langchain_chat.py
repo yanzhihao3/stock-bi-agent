@@ -24,6 +24,7 @@ from services.chat_common import (
     MAX_HISTORY_MESSAGES,
     append_trace,
     normalize_tool_args,
+    truncate_for_trace,
     body_chars,
     LIMIT_NOTICE,
     BUDGET_EXHAUSTED_PROMPT,
@@ -73,6 +74,10 @@ async def chat(
         "task": task,
         "session_id": session_id,
         "tool_calls": [],
+        # 工具返回的内容（截断后），与 chat.py 同名同结构
+        "tool_results": [],
+        # 本轮完整回答（含工具调用 JSON 块），离线核对时先用 answer_body() 剥掉
+        "answer": "",
         "answer_chars": 0,
         "body_chars": 0,
         "truncated": False,
@@ -194,6 +199,12 @@ async def chat(
                 if out is not None:
                     text = getattr(out, "content", None) or str(out)
                     tool_outputs.append(str(text))
+                    # 直接写进 trace（而不是局部变量）：trace 在函数开头就建好了，
+                    # 中途抛异常时 finally 里也不会有"变量未定义"的风险
+                    trace["tool_results"].append({
+                        "name": event.get("name", "unknown"),
+                        "output": truncate_for_trace(text),
+                    })
 
             # LLM 文本流 — 始终流式输出；工具执行完后模型会继续生成最终回答
             if kind == "on_chat_model_stream":
@@ -243,6 +254,7 @@ async def chat(
         #      触发 "Attempted to exit cancel scope in a different task" 并把当前连接一起取消；
         #   2. 重复的握手和 list_tools 白白浪费。
         # 现在连接由 get_mcp_manager() 持有、随进程存活，单次对话结束只需要落盘轨迹。
+        trace["answer"] = assistant_message
         trace["answer_chars"] = len(assistant_message)
         trace["body_chars"] = body_chars(assistant_message)
         trace["elapsed_ms"] = int((time.perf_counter() - trace_started) * 1000)

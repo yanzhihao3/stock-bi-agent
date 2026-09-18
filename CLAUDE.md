@@ -121,6 +121,18 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 - `concurrency_check.py` - 共享 MCP 连接下的并发安全检查，曾抓出 `connect()` 的建连竞态
 - 当前基线：两个引擎在 17 条上都是 17/17；langchain 的 token 消耗约为 agents 的一半
 
+### 回答数字一致性核对 (`eval/check_numbers.py`)
+- 拿 `tool_results`（工具返回）里的数字当标准答案，核对 `answer`（回答正文）里的数字。
+  纯本地处理，**不调用模型**。
+- 轨迹字段由两个引擎写入：`services/chat.py` 的 `_extract_tool_results()`（工具名按
+  调用顺序对齐，因为 `parallel_tool_calls=False` 保证串行）、`langchain_chat.py` 的
+  `on_tool_end` 分支；截断长度见 `chat_common.truncate_for_trace()`
+- 输出的是**可疑清单**不是判定结果。真出现量级差异（差 10 的整数次幂）和"同一数字的
+  粗略复述"会被单独归类 —— 这两种多半无害，混进可疑清单会让噪音淹没真问题
+- ⚠️ 调容差参数要小心：试过把量级容差放宽到 5%，结果 1500 被匹配成"某个成交额 10^4 倍
+  的近似值"，一条真可疑的数字反而漏掉。**假阴性比假阳性危险**，`test/test_check_numbers.py`
+  把这些边界锁住了
+
 ## 启动方式
 
 ```bash

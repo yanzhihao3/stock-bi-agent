@@ -80,6 +80,27 @@ def normalize_tool_args(raw: Any) -> Any:
     return raw
 
 
+# 工具返回写进轨迹时的截断长度。K 线类工具一次能返回上千条数据，
+# 原样落盘会把 traces.jsonl 撑爆；而做「回答里的数字对不对」的核对，
+# 前面这一段已经够抽出关键数字了。
+TRACE_TOOL_RESULT_LIMIT = 2000
+
+
+def truncate_for_trace(text: Any, limit: int = TRACE_TOOL_RESULT_LIMIT) -> str:
+    """把工具返回截断到 limit 个字符，供离线核对。
+
+    截断处会写上原始长度标记 —— 因为核对脚本是拿「工具返回里的数字」当标准答案的，
+    如果被截掉的部分里正好有某个数字，不去区分就会把模型的正确回答误判成编造。
+    留个标记，脚本就能把这种情况单独标出来，而不是混进可疑清单。
+    """
+    if text is None:
+        return ""
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"...[已截断，原始长度 {len(text)} 字符]"
+
+
 # 工具调用超限时的提示。抽成常量，是因为统计"回答正文长度"时要把它剔除。
 LIMIT_NOTICE = "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
 
@@ -104,18 +125,24 @@ EMPTY_FINAL_RESPONSE_MESSAGE = (
 _TOOL_BLOCK_RE = re.compile(r"```json[\s\S]*?```")
 
 
-def body_chars(text: str) -> int:
-    """去掉工具调用记录和系统提示之后，真正给用户看的**正文**长度。
+def answer_body(text: str) -> str:
+    """去掉工具调用记录和系统提示之后，真正给用户看的**正文**。
 
-    为什么要单独统计：assistant_message 里混着工具调用的 JSON 代码块，
+    为什么要单独剥出来：assistant_message 里混着工具调用的 JSON 代码块，
     总长度看着正常（四五百字），但可能一个字正文都没有 ——
     实测 8 条对话里 6 条如此：用户只看到一串 JSON 加一句"已达上限"，
     完全拿不到回答。而在此之前，评测只看"调了哪些工具"，压根没发现。
 
-    两个引擎共用这个函数，保证统计口径一致。
+    两个引擎共用这个函数，保证统计口径一致；离线核对「回答里的数字」时
+    也要先用它剥掉工具 JSON，否则会把工具参数里的数字算成回答里的数字。
     """
     body = _TOOL_BLOCK_RE.sub("", text or "")
-    return len(body.replace(LIMIT_NOTICE, "").strip())
+    return body.replace(LIMIT_NOTICE, "").strip()
+
+
+def body_chars(text: str) -> int:
+    """正文长度。取值逻辑见 answer_body()，两个引擎共用。"""
+    return len(answer_body(text))
 
 
 def clear_agent_session_memory(session_id: Optional[str]) -> None:
