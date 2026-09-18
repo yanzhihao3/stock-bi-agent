@@ -38,10 +38,6 @@ page_stock_kline = st.Page("stock/stock_kline.py", title="股票K线图", icon="
 page_stock_min = st.Page("stock/stock_min_data.py", title="当日交易", icon="📊")
 page_stock_fav = st.Page("stock/stock_favorite.py", title="股票收藏", icon="⭐")
 
-# --- 数据中心 ---
-page_data_list = st.Page("data/data_list.py", title="数据列表", icon="📑")
-page_data_manage = st.Page("data/data_manage.py", title="数据管理", icon="⚙️")
-
 # --- 智能问答 ---
 page_chat_list = st.Page("chat/chat_list.py", title="对话历史", icon="🕰️")
 page_chat = st.Page("chat/chat.py", title="通用对话", icon="💬")
@@ -61,13 +57,12 @@ if st.session_state.logged:
         {
             "账户中心": [page_user_login, page_user_info, page_user_reset, page_user_delete, page_user_list],
             "股票中心": [page_stock_search, page_stock_board, page_stock_industry, page_stock_rank, page_stock_info, page_stock_kline, page_stock_min, page_stock_fav],
-            "数据中心": [page_data_list, page_data_manage],
             "工具中心": [mcp_list, mcp_debug],
             "智能问答": [page_chat_list, page_chat],
         }
     )
 else:
-    # 未登录：显示简化菜单（无数据中心、无工具中心）
+    # 未登录：显示简化菜单（无工具中心）
     pg = st.navigation(
         {
             "账户中心": [page_user_register, page_user_login],

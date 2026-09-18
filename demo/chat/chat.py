@@ -385,5 +385,5 @@ if prompt := st.chat_input(accept_file="multiple", file_type=["txt", "pdf", "jpg
                                         plot_candlestick(df_k_line, stock_code, line_type)
                                     else:
                                         st.info("没有数据可以绘制 K 线图。请检查代码或日期范围。")
-                except:
+                except Exception:
                     traceback.print_exc()

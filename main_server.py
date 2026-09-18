@@ -11,7 +11,6 @@ import uvicorn
 from fastapi import FastAPI  # type: ignore
 from routers.user import router as user_routers
 from routers.chat import router as chat_routers
-from routers.data import router as data_routers
 from routers.stock import router as stock_routers
 
 from api.autostock import app as stock_app
@@ -29,7 +28,6 @@ def read_healthy():
 # 自定义的模块挂载在一起 作用：把各个功能模块的路由注册到主应用
 app.include_router(user_routers)
 app.include_router(chat_routers)
-app.include_router(data_routers)
 app.include_router(stock_routers)
 
 app.mount("/stock", stock_app) # 底层stock api 接口

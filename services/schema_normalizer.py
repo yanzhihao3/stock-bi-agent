@@ -123,7 +123,7 @@ def normalize_industry_rank(raw_data: Any) -> List[IndustryRankItem]:
                 # 尝试用 GBK 解码后再用 UTF-8 编码回去
                 try:
                     name = name.encode('latin1').decode('gbk')
-                except:
+                except Exception:
                     pass
 
             items.append(IndustryRankItem(

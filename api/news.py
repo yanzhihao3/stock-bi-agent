@@ -1,7 +1,6 @@
 import logging
 import os
 import requests
-import traceback
 TOKEN = os.environ.get("WHYTA_TOKEN", "")
 
 logger = logging.getLogger(__name__)
@@ -74,49 +73,21 @@ def get_douyin_hot_news():
 def get_github_hot_news():
     """获取 GitHub 热榜（近期最热门的开源项目，技术圈风向）。
     什么时候用：用户问"最近有什么火的开源项目""技术圈在关注什么"。"""
-    print("\n" + "=" * 50)
-    print("[DEBUG] 开始调用 get_github_hot_news")
-
-    url = f"https://whyta.cn/api/github?key={TOKEN}"
-    print(f"[DEBUG] 请求 URL: {url}")
-
     try:
-        response = requests.get(url, timeout=10)
-        print(f"[DEBUG] 响应状态码: {response.status_code}")
-
-        # 如果不是 200，打印错误信息
+        response = requests.get(f"https://whyta.cn/api/github?key={TOKEN}", timeout=10)
         if response.status_code != 200:
-            print(f"[ERROR] HTTP 错误: {response.status_code}")
-            print(f"[ERROR] 响应内容: {response.text[:500]}")
+            # 只记状态码：异常文本和请求 URL 里都带着含 token 的 query，不能进日志
+            logger.warning("get_github_hot_news failed: HTTP %s", response.status_code)
             return []
-
-        # 尝试解析 JSON
         data = response.json()
-        print(f"[DEBUG] JSON 解析成功，顶层字段: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
-
-        # 检查是否有 items 字段
-        if "items" in data:
-            items = data["items"]
-            print(f"[DEBUG] 成功获取 {len(items)} 条 GitHub 热点数据")
-            return items
-        else:
-            print(f"[ERROR] 响应中没有 'items' 字段")
-            print(f"[ERROR] 实际响应结构: {data}")
+        # 上游正常时返回 {"items": [...]}；结构变了就当作没查到，不猜
+        items = data.get("items") if isinstance(data, dict) else None
+        if not items:
+            logger.warning("get_github_hot_news: response has no usable 'items' field")
             return []
-
-    except requests.exceptions.Timeout:
-        print("[ERROR] 请求超时（超过10秒）")
-        traceback.print_exc()
-        return []
-
-    except requests.exceptions.ConnectionError as e:
-        print(f"[ERROR] 连接错误: {e}")
-        traceback.print_exc()
-        return []
-
+        return items
     except Exception as e:
-        print(f"[ERROR] 未知错误: {type(e).__name__}: {e}")
-        traceback.print_exc()
+        logger.warning("get_github_hot_news failed: %s", _fail_reason(e))
         return []
 
 @mcp.tool(tags={"新闻聚合"})
@@ -128,7 +99,6 @@ def get_toutiao_hot_news(): # 今日头条热点
         return requests.get(f"https://whyta.cn/api/tx/topnews?key={TOKEN}", timeout=5).json()["result"]["list"]
     except Exception as e:
         logger.warning("get_toutiao_hot_news failed: %s", _fail_reason(e))
-        traceback.print_exc()
         return []
 
 @mcp.tool(tags={"新闻聚合"})

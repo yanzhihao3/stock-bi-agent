@@ -62,7 +62,7 @@ def display_stock_data(info: dict):
     try:
         dt_obj = datetime.strptime(info.get('date', ''), '%Y-%m-%d %H:%M:%S')
         last_update = dt_obj.strftime('%Y年%m月%d日 %H:%M:%S')
-    except:
+    except Exception:
         last_update = "N/A"
 
     st.caption(f"最后更新时间：{last_update}")
