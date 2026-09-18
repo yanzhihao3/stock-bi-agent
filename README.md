@@ -2,6 +2,7 @@
 
 智能股票查询与分析系统，支持 AI 对话、股票数据查询、新闻资讯、Redis 缓存、CI/CD 自动化。
 内置 **OpenAI Agents SDK** 和 **LangChain + LangGraph** 双 AI 引擎，API 层一键切换。
+自带**工具选择评测体系**：把「模型有没有选对工具」变成可量化、可复现的指标。
 
 ## 功能特性
 
@@ -15,6 +16,19 @@
 - **Agents 引擎**：OpenAI Agents SDK，MCP 原生支持
 - **LangChain 引擎**：LangChain + LangGraph ReAct Agent
 - 通用对话、股票数据分析
+
+### 工具选择评测
+
+把「模型有没有选对工具」从主观感觉变成可量化、可复现的指标。
+
+- **评测集**：17 条用例，覆盖闲聊 / 单工具 / 易混淆 / 多工具 / 跨类组合 / 记忆 / 干扰 / 边界 8 类场景
+- **判定字段**：`expect_tools`（必须调）、`optional_tools`（可选）、`forbid_tools`（禁止，支持 `stock_*` 通配）
+- **指标**：严格准确率、工具召回率 / 精确率、违禁调用、平均工具调用数、平均回答正文、token 用量
+- **分层跑**：`--category` / `--tag` / `--id` 只跑某一类或某几条；`--repeat` 对边界用例重复验证
+- **实测**：两个引擎在 17 条上均为 **17/17**；langchain 引擎的 token 消耗约为 agents 的 **一半**
+
+> 评测**没有**接进 CI —— 每次运行都会真实调用大模型与外部 API，成本随 push 频率累积。
+> 改动提示词 / 工具描述后手动跑一次即可（见「测试」一节）。
 
 ### 用户级长期记忆
 - 跨会话记住用户身份、偏好、持仓等稳定信息（`user_memory` 表）
@@ -147,20 +161,34 @@ POST /v1/chat/
 ├── demo/                   # Streamlit 前端
 ├── models/                 # 数据模型
 ├── test/                   # 单元测试
+├── eval/                   # 工具选择评测
+│   ├── golden_set.yaml     # 评测集（17 条用例 / 8 类场景）
+│   ├── run_eval.py         # 跑批 + 判定 + 报告
+│   └── concurrency_check.py# MCP 共享连接的并发安全检查
+├── conftest.py             # pytest 全局配置（加载 .env）
 └── .github/workflows/      # GitHub Actions CI/CD
 ```
 
 ## 测试
 
-```bash
-# 运行单元测试（39 个测试，不需要外部依赖）
-pytest test/test_schema_normalizer.py test/test_redis_client.py test/test_auth.py test/test_chat_common.py test/test_jinja2_template.py test/test_errors.py -v
+**单元测试**（39 个，不需要外部依赖）：
 
-# 运行所有测试
+```bash
 pytest test/
 ```
 
-每次 push 到 GitHub，CI 会自动运行测试。
+**工具选择评测**（会真实调用大模型与外部 API，需要先启动 `main_mcp.py`）：
+
+```bash
+python eval/run_eval.py --engine agents                            # 全量 17 条，约 3 分钟
+python eval/run_eval.py --engine agents --tag 难题                 # 只跑 6 条难题，约 1 分钟
+python eval/run_eval.py --engine agents --id stock-04 --repeat 3   # 单条重复跑，看稳定性
+python eval/run_eval.py --engine langchain                         # 换引擎做对比
+```
+
+加 `--min-accuracy 0.9` 可以让脚本在准确率低于阈值时返回非零退出码（供外部门禁调用）。
+
+每次 push 到 GitHub，CI 会自动运行单元测试并构建 Docker 镜像。
 
 ## 技术栈
 
@@ -193,6 +221,8 @@ Redis 不可用时自动降级为直调外部 API，不影响服务。
 
 - **autostock.cn** - 股票数据（K线、排名、板块等）
 - **whyta.cn** - 新闻、名言、实用工具
+  ⚠️ 免费第三方聚合服务，稳定性无保证（实测多个接口返回 404 / 503）。
+  工具失败时返回空列表并记一条 warning 日志，用户侧表现为"没查到"。
 
 ## 数据库
 

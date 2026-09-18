@@ -42,10 +42,13 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 - Redis 不可用时不影响业务
 
 ### MCP 工具服务 (`api/`)
-- `autostock.py` - 股票数据查询（K线、排名、板块等），Token: `zgaLG8unUPr`
-- `news.py` - 今日要闻、抖音热点、GitHub热榜等，Token: `6d997a997fbf`
-- `saying.py` - 名言鸡汤服务，Token: `6d997a997fbf`
-- `tool.py` - 城市天气、电话归属地、汇率换算等，Token: `6d997a997fbf`
+- `autostock.py` - 股票数据查询（K线、排名、板块等）。Token 走环境变量 `AUTOSTOCK_TOKEN`
+- `news.py` - 今日要闻、抖音热点、GitHub热榜等。Token 走 `WHYTA_TOKEN`
+- `saying.py` - 名言鸡汤服务。Token 走 `WHYTA_TOKEN`
+- `tool.py` - 城市天气、电话归属地、汇率换算等。Token 走 `WHYTA_TOKEN`
+- 共 22 个工具。K 线三兄弟（日/周/月）已合并为 `stock_get_kline(code, period)`，
+  只在 MCP 层暴露给 AI；三个独立的 HTTP 路由保留给前端画图
+- 工具失败不抛异常：返回空列表并记一条 warning，日志里**不含 URL 与 key**
 
 ### MCP 聚合 (`main_mcp.py`)
 - 通过 `FastMCP.from_fastapi()` 将 FastAPI 应用转为 MCP 服务器
@@ -102,8 +105,21 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 
 ### CI/CD (`.github/workflows/ci.yml`)
 - push/PR 到 main 自动触发
-- job 1: 在 Python 3.10/3.11 上运行 pytest（39 个单元测试）
+- job 1: 在 Python 3.10/3.11 上运行 pytest（39 个单元测试），并注入测试用的假密钥
+  （`JWT_SECRET` / `TIMESTAMP_SECRET` 在代码里是必填项，缺失会直接报错）
 - job 2: 测试通过后构建 Docker 镜像
+- ⚠️ **工具选择评测没有接进 CI**，这是有意的：每次运行都会真实调用大模型与外部 API，
+  成本随 push 频率累积。改成"改动相关文件后手动跑一次"，见下面的「改动前后的约定」。
+
+### 工具选择评测 (`eval/`)
+- `golden_set.yaml` - 评测集，17 条用例覆盖 8 类场景（闲聊 / 单工具 / 易混淆 / 多工具 /
+  跨类组合 / 记忆 / 干扰 / 边界）。判定字段：`expect_tools`（必须调）、
+  `optional_tools`（可选）、`forbid_tools`（禁止，支持 `[__any__]` 特殊标记与
+  `stock_*` 通配符）
+- `run_eval.py` - 进程内驱动 `chat()`（不走 HTTP，避开 JWT），读轨迹比对期望，输出
+  严格准确率 / 召回率 / 精确率 / 违禁调用 / 平均调用数 / 平均回答正文 / token 用量
+- `concurrency_check.py` - 共享 MCP 连接下的并发安全检查，曾抓出 `connect()` 的建连竞态
+- 当前基线：两个引擎在 17 条上都是 17/17；langchain 的 token 消耗约为 agents 的一半
 
 ## 启动方式
 
@@ -130,7 +146,10 @@ OPENAI_MODEL=deepseek-v4-flash
 OPENAI_VISON_MODEL=qwen-vl
 REDIS_URL=redis://localhost:6379/0   # 可选，默认值
 AUTOSTOCK_TOKEN=...                  # 小熊股票 API token
-WHYTA_TOKEN=6d997a997fbf             # 可选，有默认值
+WHYTA_TOKEN=...                      # 免费第三方，可能失效（见「外部 API」）
+AUTOSTOCK_TOKEN=...                  # 付费股票数据接口
+JWT_SECRET=...                       # 必填：缺失会直接启动失败
+TIMESTAMP_SECRET=...                 # 必填：同上
 MEMORY_ENABLED=1                     # 长期记忆总开关（0 关闭）
 MEMORY_BATCH_SIZE=10                 # 攒够多少条未处理消息才提取
 MEMORY_MAX_ITEMS=30                  # 每用户最多保留记忆条数
@@ -143,26 +162,52 @@ MAX_TOOL_CALLS=5                     # 单轮工具调用上限
 
 ## 依赖
 
+所有版本锁定在 `requirements.txt`，并与本机验证环境保持一致。核心部分：
+
 ```bash
-# 核心
-agents>=1.4.0           # OpenAI Agents SDK
-fastapi>=0.122.0        # API 框架
-fastmcp==2.13.1         # MCP 服务
-langchain>=1.2.0        # LangChain 引擎
-langchain-openai>=1.2.0 # LangChain OpenAI 适配
-langgraph>=1.1.0        # LangGraph Agent
-# 其他见 requirements.txt
+openai-agents==0.13.6    # OpenAI Agents SDK（⚠️ 包名是 openai-agents，不是 agents）
+langchain==1.2.18        # LangChain 引擎
+langchain-openai==1.2.1  # LangChain OpenAI 适配
+langgraph==1.1.10        # LangGraph Agent
+fastapi==0.135.2         # API 框架
+fastmcp==3.2.4           # MCP 服务端
+mcp==1.27.0              # MCP 客户端 SDK（services/mcp_adapter.py 直接 import）
 ```
+
+⚠️ PyPI 上另有一个叫 `agents` 的包，那是已退役的 TensorFlow Agents（强化学习），
+装它会拖进 tensorflow + gym 约 700MB，且不提供本项目要用的 `Agent` / `Runner`。
 
 ## 测试
 
 ```bash
-# 运行单元测试（39 个，不需要外部依赖）
+# 单元测试（39 个，不需要外部依赖）
 pytest test/
 
-# 运行所有测试
-pytest test/
+# 工具选择评测（会真实调用大模型与外部 API，需要先启动 main_mcp.py）
+python eval/run_eval.py --engine agents                            # 全量 17 条，约 3 分钟
+python eval/run_eval.py --engine agents --tag 难题                 # 只跑 6 条难题，约 1 分钟
+python eval/run_eval.py --engine agents --id stock-04 --repeat 3   # 单条重复跑，看稳定性
+python eval/run_eval.py --engine langchain                         # 换引擎对比
+
+# 并发安全检查（动了 MCP 连接相关代码后跑）
+python eval/concurrency_check.py --n 3
 ```
+
+## 改动前后的约定
+
+改动下面这些内容后，**必须跑一次工具选择评测**确认没有退化：
+
+```bash
+python eval/run_eval.py --engine agents --tag 难题   # 6 条难题，约 1 分钟
+```
+
+- `services/chat_common.py` 的 `TOOL_CATEGORIES`（工具分类）
+- `api/*.py` 里任何工具的 docstring —— **那就是模型看到的工具描述**
+- `templates/chat_start_system_prompt.jinja2`（系统提示词）
+- `MAX_TOOL_CALLS`、`temperature` 等影响模型行为的参数
+
+原因：这些改动**不会让单元测试变红**（单测只覆盖代码逻辑），但会让模型选错工具或
+多调工具 —— 只有评测能看出来。
 
 ## 外部 API
 
@@ -174,3 +219,6 @@ pytest test/
 ### whyta.cn（新闻/名言/工具）
 - Token: 通过环境变量 `WHYTA_TOKEN` 配置（见 .env，不再硬编码）
 - API 文档: https://apis.whyta.cn/
+- ⚠️ **免费第三方聚合服务，稳定性无保证**：2026-09 实测新闻、名言、花语等多个接口
+  返回 404 / 503。工具失败时返回空列表并记一条 warning 日志，用户侧表现为"没查到"。
+  排查时看日志里的 `xxx failed: HTTPError (HTTP 404)` 即可区分"上游挂了"和"真没数据"。
