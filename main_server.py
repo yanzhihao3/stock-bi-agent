@@ -7,6 +7,12 @@ load_dotenv()
 if not os.environ.get("OPENAI_API_KEY"):
     raise ValueError("请设置 OPENAI_API_KEY 环境变量，参考 .env.example")
 
+# 日志要在导入业务模块之前配好，这样它们模块级的日志也有统一格式。
+# 放在模块级而不是 __main__ 里 —— 这样 `uvicorn main_server:app` 启动时也生效。
+from services.observability import RequestIdMiddleware, setup_logging  # noqa: E402
+
+setup_logging("server")
+
 import uvicorn
 from fastapi import FastAPI  # type: ignore
 from routers.user import router as user_routers
@@ -17,6 +23,8 @@ from api.autostock import app as stock_app
 from services.errors import register_error_handlers
 
 app = FastAPI()
+# 给每个请求绑一个 id（对话请求会在 routers/chat.py 里覆盖成 session_id）
+app.add_middleware(RequestIdMiddleware)
 register_error_handlers(app)
 
 # 这是你的股票+聊天+用户管理综合服务的启动文件，把所有路由模块整合到一起，启动服务器。

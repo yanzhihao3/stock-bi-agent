@@ -25,7 +25,9 @@ from services.chat_common import (
     init_chat_session,
     MAX_HISTORY_MESSAGES,
     append_trace,
+    log_tool_result,
     normalize_tool_args,
+    summarize_tool_output,
     truncate_for_trace,
     body_chars,
     LIMIT_NOTICE,
@@ -33,6 +35,7 @@ from services.chat_common import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
 )
 from services.memory import schedule_memory_extraction
+from services.observability import new_request_id, request_id
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +128,14 @@ def _extract_usage(result) -> dict:
         return {}
 
 
-def _extract_tool_results(result, names: Optional[List[str]] = None) -> List[dict]:
-    """把本轮工具返回的内容（截断后）记进轨迹，供离线核对「回答里的数字对不对」。
+def _extract_tool_results(result, calls: Optional[List[dict]] = None) -> List[dict]:
+    """把本轮工具返回记进轨迹，并顺手判定「空 / 错」。
 
     数据来源是运行结束后的 result.new_items：
       * ToolCallItem        —— 模型发起的调用
       * ToolCallOutputItem  —— 工具返回，.output 就是工具真实返回值
 
-    名字按**调用顺序**对齐，而不是靠 call_id 去配对。原因：本项目 Agent 设了
+    名字和参数按**调用顺序**对齐，而不是靠 call_id 去配对。原因：本项目 Agent 设了
     parallel_tool_calls=False，工具是串行执行的，所以 new_items 里"第 i 个工具返回"
     必然对应调用列表里"第 i 次调用"。实测（`--id stock-01`）chat-completions 模式下
     ToolCallItem 的 raw_item 上并不总能取到 call_id，靠它配对会全是 unknown。
@@ -142,22 +145,29 @@ def _extract_tool_results(result, names: Optional[List[str]] = None) -> List[dic
     """
     try:
         items = getattr(result, "new_items", None) or []
+        outputs = [item.output for item in items if isinstance(item, ToolCallOutputItem)]
 
-        outputs = []
-        for item in items:
-            if not isinstance(item, ToolCallOutputItem):
-                continue
-            output = item.output
-            if not isinstance(output, str):
-                output = json.dumps(output, ensure_ascii=False, default=str)
-            outputs.append(truncate_for_trace(output))
+        calls = calls or []
+        results = []
+        for index, output in enumerate(outputs):
+            # 调用次数可能比返回多一条（超限那次只记录、没执行），多出来的名字用不上
+            call = calls[index] if index < len(calls) else {}
+            name = call.get("name", "unknown")
+            text = output if isinstance(output, str) \
+                else json.dumps(output, ensure_ascii=False, default=str)
 
-        # 调用次数可能比返回多一条（超限那次只记录、没执行），多出来的名字用不上
-        names = names or []
-        return [
-            {"name": names[i] if i < len(names) else "unknown", "output": output}
-            for i, output in enumerate(outputs)
-        ]
+            # 判定用的是**未截断**的原始返回 —— 截断后再判可能会把"只是太长"当成正常
+            summary = summarize_tool_output(output)
+            log_tool_result(name, call.get("args"), summary)
+
+            results.append({
+                "name": name,
+                "output": truncate_for_trace(text),
+                "size": summary["size"],
+                "empty": summary["empty"],
+                "error": summary["error"],
+            })
+        return results
     except Exception:
         logger.exception("extract tool results failed")
         return []
@@ -291,6 +301,15 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
         session_settings=SessionSettings(limit=MAX_HISTORY_MESSAGES),
     )
 
+    # 再绑一次 session_id（值和外层一样，所以解开顺序天然正确）。
+    # 为什么外层 routers/chat.py 已经绑了还要再来一次：评测脚本和测试是**直接调用**
+    # chat() 的，不经过路由层 —— 不在这里兜底的话，那些场景的日志全是 [-]，
+    # 而它们恰恰是最需要和 traces.jsonl 对着看的时候。
+    #
+    # 位置刻意贴着 try：绑在更前面（比如函数开头）的话，中间那几行一旦抛异常，
+    # 下面的 finally 跑不到，session_id 就会残留在调用方的上下文里。
+    request_token = request_id.set(session_id or new_request_id())
+
     try:
         if not tools or len(tools) == 0:
             agent = Agent(
@@ -374,7 +393,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
 
                 trace["usage"] = _extract_usage(result)
                 trace["tool_results"] = _extract_tool_results(
-                    result, [call["name"] for call in trace["tool_calls"]]
+                    result, trace["tool_calls"]
                 )
                 # 超限了 → 补一次不带工具的最终回答，别让用户对着空白
                 if trace["truncated"]:
@@ -404,6 +423,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
         # 清掉该会话记忆库里的残留，避免脏数据影响下一轮
         clear_agent_session_memory(session_id)
     finally:
+        request_id.reset(request_token)
         trace["answer"] = assistant_message
         trace["answer_chars"] = len(assistant_message)
         trace["body_chars"] = body_chars(assistant_message)

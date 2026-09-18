@@ -23,7 +23,9 @@ from services.chat_common import (
     get_chat_sessions,
     MAX_HISTORY_MESSAGES,
     append_trace,
+    log_tool_result,
     normalize_tool_args,
+    summarize_tool_output,
     truncate_for_trace,
     body_chars,
     LIMIT_NOTICE,
@@ -32,6 +34,7 @@ from services.chat_common import (
 )
 from services.memory import schedule_memory_extraction
 from services.mcp_adapter import get_mcp_manager
+from services.observability import new_request_id, request_id
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +127,10 @@ async def chat(
     # 进程级共享连接，不再每轮新建/断开（原因见 get_mcp_manager 的说明）
     mcp_manager = get_mcp_manager()
 
+    # 与 chat.py 同样再绑一次 session_id：评测脚本直接调用 chat()，不经过路由层。
+    # 位置贴着 try —— 绑太早的话，中间抛异常时 finally 跑不到，id 会残留。
+    request_token = request_id.set(session_id or new_request_id())
+
     try:
         await mcp_manager.connect()  # 手动连接 MCP
         lc_tools = []
@@ -168,6 +175,8 @@ async def chat(
         assistant_message = ""
         # 收集本轮的工具返回，超限时用来兜底总结
         tool_outputs: List[str] = []
+        # run_id → 调用参数。on_tool_end 事件里不带参数，靠这个回查
+        tool_args_by_run: dict = {}
 
         # 使用 astream_events 获取细粒度事件
         async for event in agent.astream_events(
@@ -188,6 +197,8 @@ async def chat(
                 tool_call_count += 1
                 tool_input = event.get("data", {}).get("input", {})
                 tool_name = event.get("name", "unknown")
+                # 记下参数，on_tool_end 那个事件里没有参数
+                tool_args_by_run[event.get("run_id")] = tool_input
                 trace["tool_calls"].append({"name": tool_name, "args": normalize_tool_args(tool_input)})
                 args_json = json.dumps(tool_input, ensure_ascii=False) if isinstance(tool_input, dict) else str(tool_input)
                 yield f"\n```json\n{tool_name}:{args_json}\n```\n\n"
@@ -199,11 +210,17 @@ async def chat(
                 if out is not None:
                     text = getattr(out, "content", None) or str(out)
                     tool_outputs.append(str(text))
+                    name = event.get("name", "unknown")
+                    summary = summarize_tool_output(text)
+                    log_tool_result(name, tool_args_by_run.get(event.get("run_id")), summary)
                     # 直接写进 trace（而不是局部变量）：trace 在函数开头就建好了，
                     # 中途抛异常时 finally 里也不会有"变量未定义"的风险
                     trace["tool_results"].append({
-                        "name": event.get("name", "unknown"),
+                        "name": name,
                         "output": truncate_for_trace(text),
+                        "size": summary["size"],
+                        "empty": summary["empty"],
+                        "error": summary["error"],
                     })
 
             # LLM 文本流 — 始终流式输出；工具执行完后模型会继续生成最终回答
@@ -248,6 +265,7 @@ async def chat(
         schedule_memory_extraction(user_name)
 
     finally:
+        request_id.reset(request_token)
         # 注意：这里刻意**不再**调用 mcp_manager.disconnect()。
         # 原先每轮断开会造成两个后果：
         #   1. 下一个请求重新建一个 sse_client 上下文，旧上下文被 GC 时在别的任务里关闭，

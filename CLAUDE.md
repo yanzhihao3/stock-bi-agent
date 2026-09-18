@@ -133,6 +133,27 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
   的近似值"，一条真可疑的数字反而漏掉。**假阴性比假阳性危险**，`test/test_check_numbers.py`
   把这些边界锁住了
 
+### 可观测性 (`services/observability.py` + `eval/report.py`)
+
+- **这个模块出现之前，项目根本没配过日志** —— 11 个模块都有 `getLogger(__name__)`，
+  但没有 handler，于是 warning/exception 只打 stderr、不落盘，info/debug 被丢弃。
+  真实后果：K 线接口静默返回 `data:[]`，一直没人发现。
+- 日志：`setup_logging("server" | "mcp" | "eval")`，控制台 INFO + 文件 DEBUG（轮转）。
+  **必须在进程入口调一次**；`main_server.py` 放在模块级（这样 `uvicorn main_server:app` 也生效）。
+- request id：`ContextVar` + `RequestIdFilter`，只留一个字段 ——
+  普通请求用中间件生成的短 id，对话请求由 `routers/chat.py` 覆盖成 `session_id`。
+- ⚠️ 改这一块前先看 `test/test_observability.py`，里面锁了四件事：
+  流式链路里 set 的 id 能被内层引擎看到、并发不串号、后台任务继承 id、中间件请求后必须 reset。
+  这些结论来自一次专门的探针验证（临时脚本，验完已删）。
+- `services/chat.py` / `langchain_chat.py` 里还会**再绑一次** session_id：
+  评测脚本直接调 `chat()`、不经过路由层，不兜底的话那些日志全是 `[-]`。
+  位置刻意贴着 `try` —— 绑太早的话中间抛异常时 `finally` 跑不到，id 会残留。
+- 工具健康度：`chat_common.summarize_tool_output()` 判定空/错，
+  `log_tool_result()` 只记**工具名+参数摘要+大小+原因**，不记返回正文（正文在 traces.jsonl 里）。
+  形状规则的真值表在 `test/test_tool_output.py`。
+- `eval/report.py` 出健康度报表。**老轨迹没有判定字段时会单独计"未判定"**，
+  不能默认当成正常 —— 否则真有故障时报表会显示一切健康。
+
 ## 启动方式
 
 ```bash

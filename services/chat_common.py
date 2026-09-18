@@ -101,6 +101,101 @@ def truncate_for_trace(text: Any, limit: int = TRACE_TOOL_RESULT_LIMIT) -> str:
     return text[:limit] + f"...[已截断，原始长度 {len(text)} 字符]"
 
 
+def _dumps(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        return str(value)
+
+
+def _unwrap_mcp_envelope(raw: Any) -> Any:
+    """尽量剥掉包装层，拿到业务层的对象；剥不动就原样返回。
+
+    层级（对着真实返回形状写的）：
+      1. fastmcp 把工具返回值包成 {"type": "text", "text": "<json 字符串>"}
+      2. api/*.py 统一用 success_response / error_response
+    有的工具则不包装（天气直接返回上游 dict），有的直接返回 list 或纯字符串，
+    所以这里只做"能剥就剥"，不做假设。
+    """
+    obj = raw
+    if isinstance(obj, str):
+        try:
+            obj = json.loads(obj)
+        except Exception:
+            return raw  # 纯文本工具（如名言）走到这
+    if isinstance(obj, dict) and obj.get("type") == "text" and isinstance(obj.get("text"), str):
+        try:
+            return json.loads(obj["text"])
+        except Exception:
+            return obj["text"]
+    return obj
+
+
+def summarize_tool_output(raw: Any) -> Dict[str, Any]:
+    """判断一次工具返回是「空」还是「错」。
+
+    返回 {"size": int, "empty": bool, "error": bool, "reason": str|None}
+
+    为什么需要它：K 线接口曾经静默返回 `{"code":200,"message":"success","data":[]}` ——
+    HTTP 200、不抛异常、日志里一条记录都没有，于是"用户问走势、AI 拿不到 K 线"
+    这件事一直没人发现。这类故障靠返回值内容才判得出来。
+
+    为什么抽成纯函数：可以脱离网络和模型做单测（见 test/test_tool_output.py）。
+    """
+    if raw is None:
+        return {"size": 0, "empty": True, "error": False, "reason": "返回 None"}
+
+    size = len(raw) if isinstance(raw, str) else len(_dumps(raw))
+    payload = _unwrap_mcp_envelope(raw)
+
+    if isinstance(payload, dict):
+        code = payload.get("code")
+        if isinstance(code, int) and code != 200:
+            message = str(payload.get("message", ""))[:80]
+            return {"size": size, "empty": False, "error": True,
+                    "reason": f"code={code} message={message}"}
+        if "data" in payload:
+            data = payload["data"]
+            # data 为 None / [] / {} 都算"没拿到东西"
+            if data is None or (hasattr(data, "__len__") and len(data) == 0):
+                return {"size": size, "empty": True, "error": False, "reason": "data 为空"}
+        return {"size": size, "empty": False, "error": False, "reason": None}
+
+    if isinstance(payload, list):
+        if not payload:
+            return {"size": size, "empty": True, "error": False, "reason": "空列表"}
+        return {"size": size, "empty": False, "error": False, "reason": None}
+
+    if isinstance(payload, str) and not payload.strip():
+        return {"size": size, "empty": True, "error": False, "reason": "空字符串"}
+
+    return {"size": size, "empty": False, "error": False, "reason": None}
+
+
+def _args_preview(args: Any, limit: int = 120) -> str:
+    if args in (None, {}, []):
+        return "-"
+    text = args if isinstance(args, str) else _dumps(args)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def log_tool_result(name: str, args: Any, summary: Dict[str, Any]) -> None:
+    """工具返回为空或出错时记一条 warning。
+
+    遵守 content-free 原则：只记**工具名 + 参数摘要 + 返回大小 + 原因**，
+    不记返回正文 —— 正文可能上千字符（K 线一次上千条），而且已经完整存在
+    traces.jsonl 里了。日志里再存一份只会让文件膨胀、还容易被误当数据源。
+    """
+    if not (summary.get("empty") or summary.get("error")):
+        return
+
+    status = "error" if summary.get("error") else "empty"
+    logger.warning(
+        "tool_result status=%s tool=%s args=%s size=%s reason=%s",
+        status, name, _args_preview(args), summary.get("size"), summary.get("reason") or "-",
+    )
+
+
 # 工具调用超限时的提示。抽成常量，是因为统计"回答正文长度"时要把它剔除。
 LIMIT_NOTICE = "\n[系统提示：工具调用次数已达上限，停止继续调用]\n"
 

@@ -19,6 +19,7 @@ from models.data_models import BasicResponse, RequestForChat
 from models.orm import UserTable
 from services.auth import get_current_user
 from services.errors import BusinessError
+from services.observability import request_id
 
 set_default_openai_api("chat_completions")
 set_tracing_disabled(True)
@@ -40,6 +41,13 @@ async def chat(
     """流式聊天：正文按 message 事件逐段下发，异常按 error 事件下发"""
 
     async def chat_stream_generator():
+        # 一次聊天的关联键用 session_id：日志、运行轨迹、数据库三边都能对上这个值，
+        # 排查时 grep 一个 session_id 就能捞出从接口到模型到工具的完整链路。
+        #
+        # 绑在这里而不是 services/chat.py 内部：异步生成器里的 ContextVar
+        # set/reset 跨 yield 时行为很绕，绑在调用方（这里）最稳。已用探针验证：
+        # 生成器里 set 的 id 能被内层引擎生成器里的 logger 看到，并发也不串号。
+        token = request_id.set(req.session_id)
         try:
             engine = chat_langchain if req.engine == "langchain" else chat_agents
             async for chunk in engine.chat(
@@ -67,6 +75,8 @@ async def chat(
                 )
             except Exception:
                 logger.exception("failed to persist chat error message")
+        finally:
+            request_id.reset(token)
 
     return StreamingResponse(
         content=chat_stream_generator(),

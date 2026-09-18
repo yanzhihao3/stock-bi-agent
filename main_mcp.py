@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import requests  # type: ignore
 from dotenv import load_dotenv
@@ -7,6 +8,16 @@ from fastmcp import FastMCP, Client
 from fastmcp.server.providers.openapi import RouteMap, MCPType
 
 load_dotenv()
+
+# 独立进程，日志单独落一份文件（app-mcp.log）。
+# 注意：这里的日志**没有** request id —— ContextVar 不跨进程，
+# 而且 MCP 也不该知道调用方的会话。要定位"某次对话为什么没数据"，
+# 靠的是后端侧那条带 session_id 的工具返回记录（见 services/chat.py）。
+from services.observability import setup_logging  # noqa: E402
+
+setup_logging("mcp")
+
+logger = logging.getLogger(__name__)
 
 from api.autostock import app
 from api.news import mcp as news_mcp
@@ -41,15 +52,17 @@ async def setup():
     await mcp.import_server(saying_mcp, prefix="")
     await mcp.import_server(tool_mcp, prefix="")
 
-#  测试工具列表
-async def _debug_tools():
+# 启动时把工具清单记进日志。
+# 原来这里 print 两遍，第二遍还打印完整的 Tool 对象（含每个工具的 JSON Schema），
+# 每次启动刷一屏，真正有用的那行反而被淹掉。
+async def _log_registered_tools():
     async with Client(mcp) as client:
         tools = await client.list_tools()
-        print("Available tools:", [t.name for t in tools])
-        print("Available tools:", [t for t in tools])
+    names = sorted(t.name for t in tools)
+    logger.info("已注册工具 %d 个: %s", len(names), ", ".join(names))
 
 if __name__ == "__main__":
     # 作用：Python 用来运行异步函数的工具。因为 setup() 和 test_filtering() 是 async def 定义的，所以需要用 asyncio.run() 来执行。
     asyncio.run(setup())
-    asyncio.run(_debug_tools())
+    asyncio.run(_log_registered_tools())
     mcp.run(transport="sse", port=8900)

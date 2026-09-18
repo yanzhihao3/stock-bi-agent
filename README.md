@@ -43,6 +43,25 @@ python eval/check_numbers.py                                    # 扫日常对�
 python eval/check_numbers.py --trace-path logs/eval-traces.jsonl # 扫评测跑批的轨迹
 ```
 
+### 可观测性（日志 + request id + 工具健康度）
+
+- **统一日志**：`services/observability.py` 用 `dictConfig` 配好双通道 —— 控制台 INFO、文件 DEBUG（`logs/app-<service>.log`，10MB × 5 轮转）。
+  在此之前项目**没有配过日志**：`logger.warning/exception` 只打到 stderr、不落盘，`logger.info/debug` 更是被直接丢弃。
+- **request id 贯穿**：`ContextVar` + `logging.Filter`，格式为 `时间 级别 [request_id] 模块: 消息`。
+  对话请求的 id 直接用 `session_id` —— 日志、`logs/traces.jsonl`、数据库三边同名，`grep` 一个值就能捞出从接口到模型到工具的完整链路。
+  按 asyncio 任务隔离（并发不串号），后台任务（记忆提取）继承创建时的 id。
+- **工具健康度**：`summarize_tool_output()` 判定每次工具返回是「空」还是「错」，确实为空/错时记一条**不含返回正文**的 warning，并在轨迹里留下 `size/empty/error` 字段；`eval/report.py` 汇总成报表。
+
+```bash
+python eval/report.py                                           # 日常对话的健康度报表
+python eval/report.py --trace-path logs/eval-traces.jsonl        # 看评测跑批
+python eval/report.py --all-tools                                # 正常的工具也列出来
+```
+
+> Windows PowerShell 读日志要显式指定编码，否则中文会变乱码：
+> `Get-Content logs\app-server.log -Tail 20 -Encoding UTF8`
+> （日志文件本身是 UTF-8；`rg`、VS Code 直接打开都正常）
+
 ### 用户级长期记忆
 - 跨会话记住用户身份、偏好、持仓等稳定信息（`user_memory` 表）
 - 批量异步提取：未处理消息攒够 `MEMORY_BATCH_SIZE`（默认 10）条才调一次模型，不阻塞回答

@@ -356,6 +356,13 @@ def prepare(args: argparse.Namespace) -> tuple[Any, list[dict], Path]:
 
     load_dotenv(ROOT / ".env")
 
+    # 评测是进程内直接调 chat()，不经过 Web 层，所以没有请求级日志。
+    # 单独配一份 app-eval.log：这样 chat.py 里兜底绑定的 session_id 才有地方落地，
+    # 出问题能和 logs/eval-traces.jsonl 按同一个 session_id 对着看。
+    from services.observability import setup_logging
+
+    setup_logging("eval")
+
     cases = yaml.safe_load(set_path.read_text(encoding="utf-8"))
     if args.limit:
         cases = cases[: args.limit]
