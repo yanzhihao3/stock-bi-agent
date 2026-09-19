@@ -26,7 +26,7 @@ jobs:
           pip install -r requirements.txt pytest
 
       - name: Run unit tests
-        run: python -m pytest test/test_schema_normalizer.py test/test_redis_client.py test/test_auth.py test/test_chat_common.py test/test_jinja2_template.py test/test_errors.py test/test_check_numbers.py test/test_observability.py test/test_tool_output.py test/test_report.py -v
+        run: python -m pytest test/test_schema_normalizer.py test/test_redis_client.py test/test_auth.py test/test_chat_common.py test/test_jinja2_template.py test/test_errors.py test/test_check_numbers.py test/test_observability.py test/test_tool_output.py test/test_report.py test/test_memory_parse.py -v
         env:
           # JWT_SECRET / TIMESTAMP_SECRET 在代码里是必填项（未设置会直接报错）。
           # 这里给测试用的假值，仅为让 CI 能跑起来，不要用于任何真实环境。

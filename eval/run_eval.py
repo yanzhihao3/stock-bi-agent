@@ -349,6 +349,16 @@ def prepare(args: argparse.Namespace) -> tuple[Any, list[dict], Path]:
     # 必须在导入 services.* 之前设置：TRACE_PATH 是模块级读取环境变量的
     os.environ["TRACE_PATH"] = str(trace_path)
 
+    # 评测时关掉长期记忆，三个理由（按重要性）：
+    #   1. **评测结果会被历史记忆污染**。记忆是注入系统提示词的，而 eval_bot
+    #      反复跑同一套题，攒出的「用户习惯询问当天新闻」这类记忆会带进后续每一轮，
+    #      同一个用例跑两次的前提条件就不一样了 —— 评测要可复现，这是硬伤。
+    #   2. 评测不该往业务表写数据。实测 eval_bot 已攒下 5 条"记忆"（422 条消息
+    #      反复跑出来的），那是评测数据伪装成用户画像。
+    #   3. 每条用例结束都会尝试触发一次记忆提取，攒够 MEMORY_BATCH_SIZE 就真调模型。
+    # 同样必须在导入 services.* 之前设置：MEMORY_ENABLED 是模块级读取的。
+    os.environ["MEMORY_ENABLED"] = "0"
+
     # 项目里多处使用相对路径（./assert/sever.db、./assert/conversations.db），
     # 必须切到项目根目录再跑 —— 否则会在别处建出一个空数据库，
     # 评测看起来"跑通了"，结果却全是假的

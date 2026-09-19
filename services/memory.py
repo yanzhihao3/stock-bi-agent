@@ -147,19 +147,43 @@ async def _call_extract_llm(prompt: str) -> str:
     return resp.choices[0].message.content or ""
 
 
-def _parse_items(reply: str) -> List[dict]: # 解析模型输出的 JSON 动作
+def _parse_items(reply: str) -> tuple: # 解析模型输出的 JSON 动作
+    """解析模型输出的 JSON 动作，返回 `(items, error)`。
+
+    * 解析成功 → `([...], None)`。`items` 可以是空列表 —— 那是模型回了 `[]`，
+      意思是"这段对话没什么值得记的"，属于正常情况。
+    * 解析失败 → `([], "原因")`，原因要能一眼看出卡在哪一步。
+
+    为什么必须把"空"和"失败"分开：原来下面四条路径**全都**返回 `[]`，
+    日志里长得一模一样（都是一句 extracted 0 item(s)），于是分不清
+    "用户真的没什么可记"还是"这个功能坏了"：
+      1. 模型没输出 JSON 数组
+      2. JSON 语法错误
+      3. 解析出来了，但每一项都缺 key/content（模型没按格式来）
+      4. 模型确实回了 []（正常）
+    K 线接口那个静默故障（HTTP 200 + data:[]，不报错、没日志）就是这么
+    藏了很久没人发现的。同一个坑不能再踩第二次。
+    """
     text = (reply or "").strip()
+    if not text:
+        return [], "回复为空"
+
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text) # 清洗原始文本 去掉 Markdown 代码块标记
+
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end <= start: #无效
-        return []
+        return [], "回复里没有 JSON 数组"
+
     try:
         items = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as exc:
+        return [], f"JSON 解析失败: {exc.msg}"
+
+    # 不需要再判"顶层是不是数组"：切片一定以 '[' 开头、']' 结尾，
+    # 能解析成功就必然是 list（解析不出 list 的情况会落进上面的 JSONDecodeError）。
     result: List[dict] = []
-    for it in items if isinstance(items, list) else []:
+    for it in items:
         if not isinstance(it, dict):
             continue
         action = str(it.get("action") or "add").strip().lower() # 提取 action 字段
@@ -171,7 +195,22 @@ def _parse_items(reply: str) -> List[dict]: # 解析模型输出的 JSON 动作
         content = str(it.get("content") or "").strip()[:MEMORY_CONTENT_MAX]
         if key and content:
             result.append({"action": "add", "key": key, "content": content})
-    return result
+
+    if items and not result:
+        # 模型确实给了内容，但一项都用不了 —— 这是格式问题，不是"没什么可记"
+        return [], f"格式不符：{len(items)} 项都缺少可用的 key/content"
+
+    return result, None
+
+
+# 解析失败时往日志里记多少字。够看出是格式问题（比如模型回了一段解释文字），
+# 又不至于把记忆内容整段灌进日志。
+REPLY_HEAD_MAX = 120
+
+
+def _reply_head(reply: str) -> str:
+    head = (reply or "").replace("\n", " ").strip()
+    return head[:REPLY_HEAD_MAX] + ("…" if len(head) > REPLY_HEAD_MAX else "")
 
 
 def _apply_memories(db, user_id: int, items: List[dict]) -> None: # 核心：add/update/delete 落地
@@ -227,15 +266,37 @@ async def extract_user_memory(user_name: str) -> None: # 主流程：把上面�
             existing = _read_memories(db, user.id)
             prompt = _build_extract_prompt(existing, messages)
             reply = await _call_extract_llm(prompt)
-            items = _parse_items(reply)
-            if items:
+            items, parse_error = _parse_items(reply)
+
+            # 三种结果分开记，别再让它们长得一样：
+            #   解析失败 → WARNING（原来和"无可记"混在一起，故障被掩盖）
+            #   提取到 N 条 → INFO
+            #   本批无可记 → INFO（正常，模型回了 []）
+            if parse_error:
+                logger.warning(
+                    "memory: user %s 解析失败 reason=%s reply_len=%d reply_head=%s "
+                    "cursor -> %d",
+                    user_name, parse_error, len(reply or ""), _reply_head(reply),
+                    messages[-1].id,
+                )
+            elif items:
                 _apply_memories(db, user.id, items)
+                logger.info(
+                    "memory: user %s 提取 %d 条, cursor -> %d",
+                    user_name, len(items), messages[-1].id,
+                )
+            else:
+                logger.info(
+                    "memory: user %s 本批无可记, cursor -> %d",
+                    user_name, messages[-1].id,
+                )
+
+            # ⚠️ 注意：书签**仍然无条件推进**（含解析失败的情况）。
+            # 这是刻意保留的 —— 先只改可见性，看看失败到底有多频繁再决定怎么改这里。
+            # 一旦解析失败，这批对话的记忆就永久丢了（书签推过去之后
+            # _unprocessed_messages 再也查不到它们），所以这一步值得单独评估。
             _write_cursor(db, user.id, messages[-1].id)
             db.commit()
-            logger.info(
-                "memory: user %s extracted %d item(s), cursor -> %d",
-                user_name, len(items), messages[-1].id,
-            )
     except Exception:
         logger.exception("memory extraction failed for %s", user_name)
 
