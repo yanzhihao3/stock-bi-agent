@@ -45,6 +45,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tools", type=int, default=8, help="最多列几个工具")
     p.add_argument("--all-tools", action="store_true",
                    help="正常的工具也列出来（默认只列出现过空返回/错误的）")
+    p.add_argument("--recent", type=int, default=0,
+                   help="再列最近 N 条对话：问了什么、调了哪些工具、哪个返回是空的。"
+                        "多问几句之后用这个一眼看出哪条出问题")
     return p.parse_args()
 
 
@@ -100,6 +103,11 @@ def collect(records: list) -> dict:
         "tool_empty": 0,
         "tool_error": 0,
         "tool_undecided": 0,
+        # 有多少条对话**至少**碰到一次工具空/错。工具级比例看的是接口健康度，
+        # 这个看的是用户实际感受到几次 —— 一次对话里连调三次全空，对用户来说是
+        # 一次糟糕体验，不是三次。
+        "affected_records": 0,
+        "decided_records": 0,
         "first_ts": None,
         "last_ts": None,
     }
@@ -138,6 +146,7 @@ def collect(records: list) -> dict:
             continue
         stats["by_engine"][engine]["decided_records"] += 1
 
+        hit = False
         for item in tool_results:
             name = item.get("name", "unknown")
             stats["tools"][name]["calls"] += 1
@@ -151,9 +160,14 @@ def collect(records: list) -> dict:
             if item.get("empty"):
                 stats["tools"][name]["empty"] += 1
                 stats["tool_empty"] += 1
+                hit = True
             if item.get("error"):
                 stats["tools"][name]["error"] += 1
                 stats["tool_error"] += 1
+                hit = True
+        if hit:
+            stats["affected_records"] += 1
+        stats["decided_records"] += 1
 
     return stats
 
@@ -210,6 +224,11 @@ def print_report(stats: dict, broken: int, trace_path: str, top_tools: int,
         flag = "   ← 关注" if stats["tool_empty"] else ""
         print(f"  空返回            {stats['tool_empty']} 次 ({empty_rate:.1%}){flag}")
         print(f"  错误返回          {stats['tool_error']} 次 ({error_rate:.1%})")
+        if stats["decided_records"]:
+            affected = stats["affected_records"]
+            rate = affected / stats["decided_records"]
+            print(f"  受影响的对话       {affected} 条 ({rate:.1%})"
+                  f"   ← 用户实际感受到多少次")
         if stats["tool_undecided"]:
             print(f"  未判定            {stats['tool_undecided']} 次"
                   f"（加判定字段之前的轨迹，不参与上面的比例）")
@@ -251,6 +270,57 @@ def print_report(stats: dict, broken: int, trace_path: str, top_tools: int,
         print(f"  坏行（JSON 解析失败）{broken} 条")
 
 
+def _tools_desc(record: dict) -> str:
+    """一条对话里的工具调用摘要，空的/错的直接标出来。"""
+    tools = record.get("tool_results")
+    if tools is None:
+        return "（老轨迹，没有工具判定字段）"
+    if not tools:
+        return "未调用工具"
+    parts = []
+    for item in tools:
+        name = item.get("name", "?")
+        if item.get("empty"):
+            parts.append(f"{name}[空]")
+        elif item.get("error"):
+            parts.append(f"{name}[错]")
+        else:
+            parts.append(name)
+    return ", ".join(parts)
+
+
+def print_recent(records: list, limit: int) -> None:
+    """最近 N 条对话的横向对照。
+
+    汇总数字适合看趋势，但"我刚问的这几句到底哪条出问题了"要看这个 ——
+    中文和英文宽度不一致，硬对齐反而难看，所以每条占两行。
+    """
+    if limit <= 0:
+        return
+    rows = [r for r in records if r.get("question")][-limit:]
+    if not rows:
+        return
+
+    print()
+    print(f"最近 {len(rows)} 条对话")
+    print("-" * 62)
+    for index, record in enumerate(reversed(rows), start=1):
+        elapsed = record.get("elapsed_ms")
+        body = record.get("body_chars")
+        extra = []
+        if elapsed is not None:
+            extra.append(f"{elapsed / 1000:.1f}s")
+        if body is not None:
+            extra.append(f"正文 {body} 字")
+        if record.get("error"):
+            extra.append("执行失败")
+        print(f"  [{index}] {record.get('question', '?')}")
+        # session_id 留着是为了能直接 grep 日志，和 traces.jsonl 里的名字一致
+        print(f"      {record.get('engine', '?')} | {record.get('session_id', '?')}"
+              f" | {_tools_desc(record)}"
+              + (f" | {' / '.join(extra)}" if extra else ""))
+
+
 def main() -> None:
     args = parse_args()
     trace_path = Path(args.trace_path)
@@ -260,6 +330,7 @@ def main() -> None:
         print("先跑一次对话或 python eval/run_eval.py，再回来看。")
         return
     print_report(collect(records), broken, str(trace_path), args.tools, args.all_tools)
+    print_recent(records, args.recent)
 
 
 if __name__ == "__main__":
