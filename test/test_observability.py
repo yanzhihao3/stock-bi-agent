@@ -15,10 +15,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from services.observability import (
+    NOISY_LOGGERS,
     RequestIdFilter,
     RequestIdMiddleware,
     new_request_id,
     request_id,
+    scrub_secrets,
     setup_logging,
 )
 
@@ -116,6 +118,74 @@ class TestSetupLogging:
         setup_logging("unittest")
         for name in NOISY:
             assert logging.getLogger(name).level == logging.WARNING
+
+    def test_url_leaking_loggers_are_quieted(self):
+        """回归保护：这两个库必须留在降噪名单里。
+
+        urllib3 在 DEBUG 级别会打完整请求 URL（query 里带 API key），
+        实测把 whyta 的 key 明文写进了 logs/app-mcp.log；
+        sse_starlette 会把整个工具列表 JSON 和每个 chunk 都记进 DEBUG。
+        谁把这两个从名单里删掉，这个测试就红。
+        """
+        for name in ("urllib3", "sse_starlette"):
+            assert name in NOISY_LOGGERS, f"{name} 必须留在降噪名单里"
+
+
+class TestScrubSecrets:
+    def test_redacts_url_query_key(self):
+        text = 'GET https://whyta.cn/api/tianqi?key=abcdef123456&city=shanghai HTTP/1.1'
+        out = scrub_secrets(text)
+        assert "abcdef123456" not in out
+        assert "key=***" in out
+        assert "city=shanghai" in out  # 只抹密钥，别把别的参数也吃了
+
+    def test_redacts_bearer_token(self):
+        out = scrub_secrets("Authorization: Bearer sk-abcdef1234567890")
+        assert "sk-abcdef1234567890" not in out
+        assert "Bearer ***" in out
+
+    def test_redacts_common_key_names(self):
+        out = scrub_secrets("api_key=abc123 token: xyz password = p@ss")
+        assert "abc123" not in out and "xyz" not in out and "p@ss" not in out
+
+    def test_leaves_clean_text_alone(self):
+        text = "上海今天 26 度，晴。"
+        assert scrub_secrets(text) == text
+
+    def test_empty_input(self):
+        assert scrub_secrets("") == ""
+
+    def test_does_not_touch_python_kwarg_in_dict_repr(self):
+        """字典/JSON 里的 "key": "value" 形态不该被误伤。"""
+        text = '{"key": "关注股票", "content": "用户关注茅台"}'
+        assert scrub_secrets(text) == text
+
+    def test_over_redacts_rather_than_under_redacts(self):
+        """已知取舍：把 `key=foo` 这种非密钥写法也抹掉。
+
+        故意的 —— 脱敏要保证"宁可多抹"，漏一个真密钥的代价比日志难看大得多。
+        这条测试把这个取舍写成显式约定，而不是让它看起来像个意外。
+        """
+        assert scrub_secrets("sorted(items, key=some_lambda)") == "sorted(items, key=***)"
+
+    def test_scrubbing_formatter_covers_traceback(self):
+        """关键：堆栈里的 URL 也要被抹掉。
+
+        requests 的异常文本里带完整 URL（含 key），而 logger.exception 的堆栈是
+        formatter 单独拼上去的 —— 只在 Filter 里改 record.msg 覆盖不到这一块。
+        """
+        from services.observability import SecretScrubbingFormatter
+
+        formatter = SecretScrubbingFormatter("%(message)s")
+        try:
+            raise ValueError("400 Client Error for url: https://api.autostock.cn/v1/stock?token=deadbeef1234")
+        except ValueError:
+            import sys
+
+            record = logging.LogRecord("t", logging.ERROR, __file__, 1, "调用失败", None, sys.exc_info())
+        output = formatter.format(record)
+        assert "deadbeef1234" not in output
+        assert "token=***" in output
 
 
 # ---------------------------------------------------------------- 传播链路

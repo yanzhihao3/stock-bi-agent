@@ -24,6 +24,7 @@ import contextvars
 import logging
 import logging.config
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -42,10 +43,54 @@ LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
 
 # 这些库要么本身很吵，要么会把请求细节刷满日志，统一压到 WARNING。
-#   asyncio —— 实测文件里会刷满 "Using proactor: IocpProactor" 这类 DEBUG；
-#             压到 WARNING 后 "Task exception was never retrieved" 仍然保留
+#   asyncio        —— 实测刷满 "Using proactor: IocpProactor"
+#   urllib3        —— ⚠️ 见下面 SecretScrubbingFormatter 的说明，这个库在 DEBUG 级别
+#                     会把**完整请求 URL**打出来，而 URL 的 query 里带 API key
+#   sse_starlette  —— 实测把整个工具列表 JSON 和每一个 SSE chunk 都记进 DEBUG
 # 刻意**不**压 uvicorn.error —— 端口占用、启动失败这些堆栈都在它那儿。
-NOISY_LOGGERS = ("httpx", "httpcore", "mcp", "openai", "asyncio", "uvicorn.access")
+NOISY_LOGGERS = (
+    "httpx", "httpcore", "mcp", "openai", "asyncio", "uvicorn.access",
+    "urllib3", "sse_starlette",
+)
+
+# ---------------------------------------------------------------- 出口脱敏
+#
+# 为什么需要它：加日志配置时踩过一个真实的坑 —— urllib3 在 DEBUG 级别会打
+#   GET https://whyta.cn/api/tianqi?key=<真实密钥>&city=shanghai HTTP/1.1
+# 也就是把 API key 明文写进了 logs/app-mcp.log。而我们前面专门修过同类问题
+# （api/news.py 的 _fail_reason 就刻意不记完整 URL）—— 结果从更底层又漏了一遍。
+#
+# 教训：靠"记得给每个库降噪"是防不住的，漏一个就泄漏。所以在**格式化出口**
+# 统一脱敏 —— 不管哪个库、哪一层，只要最终文本里出现 key=xxx 就被替换掉，
+# 连异常堆栈一起覆盖（堆栈里也常带 URL，比如 requests 的 HTTPError）。
+# key=xxx / key: xxx / token = xxx 这类（URL query 和 .env 都是这个形态）
+_KEY_VALUE_RE = re.compile(
+    r"(?i)\b(api_?key|access_?token|auth_?token|key|token|secret|password|passwd|pwd)\b"
+    r"(\s*[=:]\s*)"
+    r"([^\s&,'\"&)]+)"
+)
+# Authorization: Bearer xxx
+_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9\-._~+/=]{8,})")
+
+
+def scrub_secrets(text: str) -> str:
+    """把文本里的密钥形态替换成 ***。纯函数，可单测。"""
+    if not text:
+        return text
+    text = _KEY_VALUE_RE.sub(r"\1\2***", text)
+    return _BEARER_RE.sub(r"\1***", text)
+
+
+class SecretScrubbingFormatter(logging.Formatter):
+    """在最终格式化结果上脱敏 —— 包括异常堆栈。
+
+    为什么不在 Filter 里改 record.msg：那样只覆盖消息体，堆栈是 formatter
+    单独拼上去的（`logger.exception` 的场景），URL 会从那里漏出去。
+    在 format() 的出口处理才是"最后一道闸"。
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return scrub_secrets(super().format(record))
 
 
 class RequestIdFilter(logging.Filter):
@@ -80,6 +125,9 @@ def setup_logging(service: str) -> Path:
         "filters": {"request_id": {"()": RequestIdFilter}},
         "formatters": {
             "standard": {
+                # 用自定义 Formatter 而不是 logging.Formatter：出口统一脱敏，
+                # 连异常堆栈一起覆盖（原因见 SecretScrubbingFormatter 的说明）
+                "()": SecretScrubbingFormatter,
                 "format": "%(asctime)s %(levelname)-7s [%(request_id)s] %(name)s: %(message)s",
                 "datefmt": "%Y-%m-%d %H:%M:%S",
             }
