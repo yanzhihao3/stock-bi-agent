@@ -98,7 +98,7 @@ def collect(records: list) -> dict:
         "by_engine": defaultdict(
             lambda: {"count": 0, "elapsed": [], "tools": 0, "decided_records": 0}
         ),
-        "tools": defaultdict(lambda: {"calls": 0, "empty": 0, "error": 0}),
+        "tools": defaultdict(lambda: {"calls": 0, "empty": 0, "error": 0, "undecided": 0}),
         "tool_calls": 0,
         "tool_empty": 0,
         "tool_error": 0,
@@ -155,6 +155,7 @@ def collect(records: list) -> dict:
             if "empty" not in item:
                 # 加判定字段之前写下的轨迹：不能默认当成"正常"，
                 # 那样报表会在真有故障时显示一切健康
+                stats["tools"][name]["undecided"] += 1
                 stats["tool_undecided"] += 1
                 continue
             if item.get("empty"):
@@ -217,10 +218,15 @@ def print_report(stats: dict, broken: int, trace_path: str, top_tools: int,
 
     calls = stats["tool_calls"]
     print()
-    print(f"工具调用            {calls} 次")
-    if calls:
-        empty_rate = stats["tool_empty"] / calls
-        error_rate = stats["tool_error"] / calls
+    undecided = stats["tool_undecided"]
+    decided_calls = calls - undecided
+    suffix = f"（可判定 {decided_calls} 次，未判定 {undecided} 次）" if undecided else ""
+    print(f"工具调用            {calls} 次{suffix}")
+    if decided_calls:
+        # 分母只能用"可判定"的次数：加判定字段之前的调用既不能算健康、
+        # 也不能算故障，放进分母会把空返回率算小（实测 4/10 会被算成 4/13）
+        empty_rate = stats["tool_empty"] / decided_calls
+        error_rate = stats["tool_error"] / decided_calls
         flag = "   ← 关注" if stats["tool_empty"] else ""
         print(f"  空返回            {stats['tool_empty']} 次 ({empty_rate:.1%}){flag}")
         print(f"  错误返回          {stats['tool_error']} 次 ({error_rate:.1%})")
@@ -229,9 +235,6 @@ def print_report(stats: dict, broken: int, trace_path: str, top_tools: int,
             rate = affected / stats["decided_records"]
             print(f"  受影响的对话       {affected} 条 ({rate:.1%})"
                   f"   ← 用户实际感受到多少次")
-        if stats["tool_undecided"]:
-            print(f"  未判定            {stats['tool_undecided']} 次"
-                  f"（加判定字段之前的轨迹，不参与上面的比例）")
 
         rows = []
         for name, data in stats["tools"].items():
@@ -242,13 +245,14 @@ def print_report(stats: dict, broken: int, trace_path: str, top_tools: int,
         if rows:
             print("  按工具看：")
             for _, _, name, data in rows[:top_tools]:
+                judged = data["calls"] - data["undecided"]
                 detail = []
                 if data["empty"]:
-                    detail.append(f"{data['empty']} 次为空 ({data['empty'] / data['calls']:.0%})")
+                    detail.append(f"{data['empty']} 次为空 ({data['empty'] / judged:.0%})")
                 if data["error"]:
                     detail.append(f"{data['error']} 次出错")
                 tail = " → " + "，".join(detail) if detail else ""
-                print(f"    {name:<24} {data['calls']:>3} 次{tail}")
+                print(f"    {name:<24} {judged:>3} 次{tail}")
             if len(rows) > top_tools:
                 print(f"    （还有 {len(rows) - top_tools} 个工具，用 --tools 调大）")
         elif not all_tools:

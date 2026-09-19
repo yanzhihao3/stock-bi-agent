@@ -88,7 +88,26 @@ class TestCollect:
             _record(tools=[_tool(name="k", empty=True)]),
             _record(tools=[_tool(name="k")]),
         ])
-        assert stats["tools"]["k"] == {"calls": 2, "empty": 1, "error": 0}
+        assert stats["tools"]["k"] == {"calls": 2, "empty": 1, "error": 0, "undecided": 0}
+
+    def test_undecided_calls_are_tracked_per_tool_too(self):
+        """逐工具的未判定次数也要单独记 —— 空返回率的分母必须排除它们。
+
+        实测的口径错误：13 次调用里 3 次未判定、4 次为空，报表算成 4/13=30.8%，
+        真实应是 4/10=40%。逐工具同理（stock_get_kline 被算成 3/4=75%，其实 3/3）。
+        """
+        stats = rp.collect([
+            _record(tools=[_tool(name="k", empty=True)]),
+            _record(tools=[_tool(name="k", empty=True)]),
+            _record(tools=[_tool(name="k", empty=True)]),
+            _record(tools=[_tool(name="k", decided=False)]),
+        ])
+        data = stats["tools"]["k"]
+        assert (data["calls"], data["empty"], data["undecided"]) == (4, 3, 1)
+        judged = data["calls"] - data["undecided"]
+        assert judged == 3
+        assert data["empty"] / judged == 1.0  # 不是 3/4
+        assert stats["tool_calls"] - stats["tool_undecided"] == 3  # 全局分母也是 3
 
     def test_engine_denominator_ignores_legacy_records(self):
         """按引擎算平均工具数时，分母只能用"有判定字段的轨迹"，
