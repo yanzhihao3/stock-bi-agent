@@ -211,30 +211,34 @@ class TestPropagation:
         assert capture.ids() == {"SESS-BG-1"}
 
     def test_nested_binding_unwinds_cleanly(self):
-        """chat.py 会在路由层已绑的基础上再绑一次同样的值，这里验证解开顺序。
+        """嵌套 set/reset 必须按后进先出解开，且与外层绑什么值无关。
 
-        两层都绑 SESS-N：内层先解开，外层必须仍拿到 SESS-N（不是回落到默认值）。
-        绑的是同一个值，所以顺序看起来无所谓 —— 但这是"看起来对"和"确实对"的区别，
-        改动这一块（比如以后内外两层绑不同的值）会立刻让它变红。
+        对应 services/chat.py 里"路由层已经绑了 session_id、chat() 里再绑一次"。
+        两边实际绑的是同一个值，但正确性**不依赖**值相同：reset(token) 还原的是
+        「创建这个 token 那一刻 ContextVar 原本的值」，所以只要 set/reset 成对、
+        后进先出，嵌套多少层都对。
+
+        这里刻意让内外绑**不同**的值 —— 用不同的值才能证明上面那句话，
+        用相同的值会让"还原对了"和"本来就没变"看起来一样。
         """
 
         async def inner():
-            token = request_id.set("SESS-N")
+            token = request_id.set("INNER")  # 故意和外层不同
             try:
                 yield request_id.get()
             finally:
                 request_id.reset(token)
 
         async def outer():
-            outer_token = request_id.set("SESS-N")
+            outer_token = request_id.set("OUTER")
             try:
                 seen = [value async for value in inner()]
-                seen.append(request_id.get())  # 内层解开之后，外层的值还在
+                seen.append(request_id.get())  # 内层解开后，应当回到 OUTER
                 return seen
             finally:
                 request_id.reset(outer_token)
 
-        assert asyncio.run(outer()) == ["SESS-N", "SESS-N"]
+        assert asyncio.run(outer()) == ["INNER", "OUTER"]
         assert request_id.get() == "-"  # asyncio.run 用的是上下文副本
 
 

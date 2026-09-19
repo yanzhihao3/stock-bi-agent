@@ -301,10 +301,18 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
         session_settings=SessionSettings(limit=MAX_HISTORY_MESSAGES),
     )
 
-    # 再绑一次 session_id（值和外层一样，所以解开顺序天然正确）。
-    # 为什么外层 routers/chat.py 已经绑了还要再来一次：评测脚本和测试是**直接调用**
-    # chat() 的，不经过路由层 —— 不在这里兜底的话，那些场景的日志全是 [-]，
-    # 而它们恰恰是最需要和 traces.jsonl 对着看的时候。
+    # 再绑一次 session_id。外层 routers/chat.py 已经绑过了，这里重复一次是为了：
+    #
+    # 1. 覆盖"不经过路由层"的入口 —— 评测脚本和测试是**直接调用** chat() 的，
+    #    路由层那行 set 根本不会执行。不在这里兜底的话，那些场景的日志全是 [-]
+    #    （ContextVar 的默认值），而它们恰恰最需要和 traces.jsonl 对着看。
+    # 2. 值取和外层一样的 session_id，所以两条入口的日志输出完全一致 ——
+    #    不会出现"浏览器里问是一个 id、评测跑是另一个 id"这种对不上的情况。
+    #
+    # 注意：值一样**不是**解开正确的前提。set() 返回的 Token 记住的是
+    #「创建它的那一刻 ContextVar 原本是什么值」，reset(token) 就是还原成那个值；
+    # 所以只要 set/reset 成对、按后进先出解开，嵌套多少层都对
+    #（实测：内层绑别的值，内层 reset 之后外层照样拿回自己的值）。
     #
     # 位置刻意贴着 try：绑在更前面（比如函数开头）的话，中间那几行一旦抛异常，
     # 下面的 finally 跑不到，session_id 就会残留在调用方的上下文里。
