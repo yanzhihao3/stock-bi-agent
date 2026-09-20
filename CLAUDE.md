@@ -137,6 +137,11 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
   python -m alembic current          # 看当前库是哪个版本
   ```
   CI 和 docker-compose 里都已经加了 `upgrade head` —— **不加的话全新环境没有表**。
+- ⚠️ `alembic` 必须留在 `requirements.txt` 里（它是**直接依赖**，不是别人的间接依赖）。
+  本机早就手动装过，所以只有干净环境才暴露：漏装时 CI 报
+  `No module named alembic.__main__; 'alembic' is a package and cannot be directly executed`。
+  那句里的"包"其实是**仓库根目录的 `alembic/` 迁移目录**（没有 `__main__.py`），
+  真包根本没装 —— 报错像"装错了/用错了"，实际是"没装"。
 - ⚠️ **为什么必须删 `create_all`**（实测对照，不是理论）：`alembic/env.py` 要
   `from models.orm import ...`，而 orm.py 在 import 时会 `create_all`。于是
   autogenerate 时 `create_all` **抢先把表建好了**，Alembic 一对比「没有差异」→

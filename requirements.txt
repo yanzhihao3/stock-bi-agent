@@ -52,6 +52,23 @@ plotly==6.7.0
 
 # ---- 数据库与缓存 ----
 SQLAlchemy==2.0.48
+
+# Alembic：表结构版本管理（"数据库的 Git"）。models/orm.py 里已经没有 create_all 了，
+# 建表/改表全靠它 —— CI 的 "Apply migrations" 一步和 docker-compose 的启动命令
+# 都直接调用 `python -m alembic upgrade head`，所以它是**直接依赖**，必须写在这里。
+#
+# ⚠️ 漏写这一行的翻车方式特别隐蔽：本机早就手动装过了，只有干净环境（CI、Docker
+#    构建）才暴露。而且报错完全指不到依赖上：
+#      No module named alembic.__main__; 'alembic' is a package and cannot be directly executed
+#    这句话里说的"包"是仓库根目录那个**同名文件夹** `alembic/`（迁移脚本目录，
+#    里面没有 __main__.py），真正的 alembic 根本没装上 —— 前半句像"装错了"，
+#    后半句像"用错了"，两个方向都是错的，实际原因是"没装"。
+#    排查技巧：把同一条命令换个目录执行。如果报错变成 `No module named alembic`
+#    （少了 `.__main__` 那半句），就说明 cwd 参与了 import、本地目录顶了包。
+#
+# Requires-Python >=3.10，正好覆盖本项目的 3.10 / 3.11 两个环境。
+alembic==1.19.2
+
 # MySQL 驱动。选 pymysql 而不是 mysqlclient：纯 Python，Windows 上不用装编译器。
 # 只有把 DATABASE_URL 指向 MySQL 时才会真正用到（默认走 SQLite）。
 #

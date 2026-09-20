@@ -28,6 +28,11 @@ jobs:
       # ⚠️ 必须在跑测试之前建表：models/orm.py 里**不再有** create_all 了，
       # 表结构由 Alembic 管。这里跑一次 upgrade 顺便验证迁移能在**空库**上跑通
       # （CI 里没有 .env，所以走默认的 SQLite）。
+      #
+      # ⚠️ alembic 必须在 requirements.txt 里。本机可能早就手动装过，只有干净环境
+      # 才暴露 —— 漏装时这步的报错是：
+      #   No module named alembic.__main__; 'alembic' is a package and cannot be directly executed
+      # 那句里的"包"指的是仓库根目录的 alembic/（迁移脚本目录），不是真包。
       - name: Apply migrations
         run: python -m alembic upgrade head
         env:
