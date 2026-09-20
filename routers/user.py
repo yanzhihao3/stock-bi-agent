@@ -12,6 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 
 import services.user as user_service
+from models.orm import USER_NAME_MAX
 from models.data_models import (
     BasicResponse,
     RequestForUserChangeInfo,
@@ -52,6 +53,11 @@ def user_login(req: RequestForUserLogin) -> BasicResponse:
 
 @router.post("/register")
 def user_register(req: RequestForUserRegister) -> BasicResponse:
+    # 长度必须在入口拦住：MySQL 会强制 VARCHAR 的长度（SQLite 不强制），
+    # 超长会抛 DataError 1406 变成 500。**这里不能截断** —— 截断会让两个不同的
+    # 用户名变成同一个，注册冲突、登录串号，比报错严重得多。
+    if len(req.user_name) > USER_NAME_MAX:
+        raise BusinessError(400, f"用户名最长 {USER_NAME_MAX} 个字符")
     user = user_service.user_register(req.user_name, req.password)
     if user is None:
         raise BusinessError(400, "用户名已存在")

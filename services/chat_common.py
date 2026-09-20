@@ -15,7 +15,13 @@ from typing import List, Dict, Any, Optional
 
 from jinja2 import Environment, FileSystemLoader
 
-from models.orm import ChatSessionTable, ChatMessageTable, SessionLocal, UserTable
+from models.orm import (
+    SESSION_TITLE_MAX,
+    ChatMessageTable,
+    ChatSessionTable,
+    SessionLocal,
+    UserTable,
+)
 from models.data_models import ChatSession
 from services.memory import get_memory_section
 
@@ -374,13 +380,26 @@ def get_init_message(task: str, user_name: Optional[str] = None) -> str:
     return system_prompt
 
 
+def normalize_session_title(question: str) -> str:
+    """会话标题：用户第一句话，截断到列长度。
+
+    为什么必须截断：`chat_session.title` 是 `String(100)`，而 **MySQL 会强制这个
+    长度**（SQLite 不强制）—— 不截断的话，用户第一句话超过 100 字就直接抛
+    `DataError 1406 Data too long`，变成 500。实测 116 字即触发。
+
+    和 `user_name` / `stock_id` 不一样：那两个是**标识**，超长必须报错而不是截断
+    （截断会让两个不同的值撞成一个）；标题只用于列表展示，截断是合理的。
+    """
+    return (question or "")[:SESSION_TITLE_MAX]
+
+
 def init_chat_session(user_name: str, user_question: str, session_id: str, task: str) -> None:
     with SessionLocal() as session:
         user_id = session.query(UserTable.id).filter(UserTable.user_name == user_name).first()
         chat_session_record = ChatSessionTable(
             user_id=user_id[0],
             session_id=session_id,
-            title=user_question,
+            title=normalize_session_title(user_question),
         )
         session.add(chat_session_record)
         session.commit()

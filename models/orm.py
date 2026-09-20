@@ -15,6 +15,20 @@ from sqlalchemy.orm import Mapped, mapped_column
 class Base(DeclarativeBase):
     pass
 
+
+# 下面几个长度常量和列定义**绑在一起用**：代码里要校验或截断时引用它们，
+# 就不会出现"列改了长度、校验忘了跟着改"的漂移。
+#
+# 为什么必须有显式校验：MySQL 会**强制** VARCHAR 的长度，SQLite 不强制。
+# 所以凡是用户能输入的地方都得在入口拦住，不能指望数据库兜底 ——
+# 超长在 MySQL 上是 1406 Data too long（500 错误），在 SQLite 上却什么都没发生，
+# 于是这类问题只会在换库之后才炸出来（实测过三处，见下面注释）。
+USER_NAME_MAX = 50
+STOCK_ID_MAX = 20
+SESSION_ID_MAX = 32
+SESSION_TITLE_MAX = 100
+
+
 # 用户表
 # = mapped_column(String)	列定义	告诉SQLAlchemy这是数据库的列
 class UserTable(Base):
@@ -24,7 +38,10 @@ class UserTable(Base):
     # ⚠️ MySQL 的 VARCHAR 必须带长度（SQLite 不要求），所以这些列都得写死长度，
     # 否则 Base.metadata.create_all() 会直接报
     #   CompileError: VARCHAR requires a length on dialect mysql
-    user_name: Mapped[str] = mapped_column(String(50))
+    #
+    # ⚠️ 而且长度**会被强制**：注册时填一个 80 字的用户名，MySQL 直接报
+    #   1406 Data too long，在 SQLite 上却不会。所以 routers/user.py 里加了校验。
+    user_name: Mapped[str] = mapped_column(String(USER_NAME_MAX))
     user_role: Mapped[str] = mapped_column(String(20))
     password: Mapped[str] = mapped_column(String(255))  # 存的是 bcrypt 哈希，60 字符，留余量
     register_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -44,7 +61,8 @@ class DataTable(Base):
 class UserFavoriteStockTable(Base):
     __tablename__ = 'user_favorite_stock'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    stock_id: Mapped[str] = mapped_column(String(20))  # 形如 sh600519
+    # 形如 sh600519。用户输入，所以 routers/stock.py 里校验了长度
+    stock_id: Mapped[str] = mapped_column(String(STOCK_ID_MAX))
     user_id: Mapped[int] = Column(Integer, ForeignKey('user.id'))
     create_time: Mapped[datetime] = Column(DateTime, default=datetime.utcnow)
 
@@ -56,8 +74,11 @@ class ChatSessionTable(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('user.id'), nullable=False)
-    session_id = Column(String(32))  # 随机 12 位，留余量
-    title = Column(String(100))
+    session_id = Column(String(SESSION_ID_MAX))  # 随机 12 位，留余量
+    # 存的是用户**第一句话**，用于会话列表展示。
+    # 必须截断：用户完全可能问一段很长的开场白，不截断在 MySQL 上就是 500。
+    # 截断逻辑见 services/chat_common.normalize_session_title()（实测 116 字即触发）。
+    title = Column(String(SESSION_TITLE_MAX))
     start_time = Column(DateTime, default=datetime.now)
     feedback: Mapped[bool] = mapped_column(Boolean, nullable=True)
     feedback_time: Mapped[datetime] = mapped_column(DateTime, nullable=True)
