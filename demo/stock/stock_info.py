@@ -3,10 +3,11 @@ import requests
 import pandas as pd
 from datetime import datetime
 
+from demo.common import API_BASE_URL
+
 # 一句话总结：类似股票软件的"个股详情页"，输入股票代码，显示价格、涨跌幅、成交量、五档盘口等所有信息
 
 # -------------------- API 配置 --------------------
-BASE_URL = "http://127.0.0.1:8000"
 INFO_ENDPOINT = "/stock/get_stock_info"
 
 if st.session_state.get('logged', False):
@@ -22,7 +23,7 @@ def fetch_stock_info(code: str):
         return None
 
     # 构造完整的 API URL
-    url = f"{BASE_URL}{INFO_ENDPOINT}"
+    url = f"{API_BASE_URL}{INFO_ENDPOINT}"
     params = {"code": code}
 
     try:
@@ -40,7 +41,7 @@ def fetch_stock_info(code: str):
             return None
 
     except requests.exceptions.ConnectionError:
-        st.error(f"连接错误：无法连接到后端服务 ({BASE_URL})。请确保后端服务正在运行。")
+        st.error(f"连接错误：无法连接到后端服务 ({API_BASE_URL})。请确保后端服务正在运行。")
         return None
     except requests.exceptions.HTTPError as e:
         st.error(f"API 请求失败，状态码：{response.status_code}. 错误信息：{response.text}")

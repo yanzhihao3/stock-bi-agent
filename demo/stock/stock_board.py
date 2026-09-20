@@ -3,10 +3,11 @@ import requests
 import pandas as pd
 from datetime import datetime
 
+from demo.common import API_BASE_URL
+
 # 一句话总结：显示股票市场主要指数的实时价格、涨跌幅、成交量等信息，类似财经网站的大盘指数板块。
 
 # -------------------- API 配置 --------------------
-BASE_URL = "http://127.0.0.1:8000"
 BOARD_ENDPOINT = "/stock/get_board_info" # 大盘数据接口路径
 
 if st.session_state.get('logged', False):
@@ -20,7 +21,7 @@ def fetch_board_info():
     """
     通过调用后端 API 获取主要指数的实时信息。
     """
-    url = f"{BASE_URL}{BOARD_ENDPOINT}"
+    url = f"{API_BASE_URL}{BOARD_ENDPOINT}"
 
     try:
         # 发送 GET 请求
@@ -36,7 +37,7 @@ def fetch_board_info():
             return []
 
     except requests.exceptions.ConnectionError:
-        st.error(f"连接错误：无法连接到后端服务 ({BASE_URL})。请确保后端服务正在运行。")
+        st.error(f"连接错误：无法连接到后端服务 ({API_BASE_URL})。请确保后端服务正在运行。")
         return None
     except requests.exceptions.HTTPError as e:
         st.error(f"API 请求失败：{e}")

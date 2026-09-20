@@ -7,10 +7,11 @@ from fastmcp.tools import Tool
 from typing import List, Any
 import pandas as pd
 
+from demo.common import MCP_SERVER_URL
+
 # 一句话总结：这是一个"工具测试台"，让你像用 Postman 一样，在网页上选择工具、填参数、看结果。
 
-# FastMCP 服务器地址
-MCP_SERVER_URL = "http://127.0.0.1:8900/sse"
+# FastMCP 服务器地址：统一由 demo/common.py 提供（环境变量可覆盖）
 
 
 # --- 异步工具加载函数 (缓存结果) ---

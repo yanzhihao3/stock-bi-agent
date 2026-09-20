@@ -21,9 +21,12 @@ class UserTable(Base):
     __tablename__ = 'user'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_name: Mapped[str] = mapped_column(String)
-    user_role: Mapped[str] = mapped_column(String)
-    password: Mapped[str] = mapped_column(String)
+    # ⚠️ MySQL 的 VARCHAR 必须带长度（SQLite 不要求），所以这些列都得写死长度，
+    # 否则 Base.metadata.create_all() 会直接报
+    #   CompileError: VARCHAR requires a length on dialect mysql
+    user_name: Mapped[str] = mapped_column(String(50))
+    user_role: Mapped[str] = mapped_column(String(20))
+    password: Mapped[str] = mapped_column(String(255))  # 存的是 bcrypt 哈希，60 字符，留余量
     register_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     status: Mapped[bool] = mapped_column(Boolean)
 
@@ -31,8 +34,8 @@ class UserTable(Base):
 class DataTable(Base):
     __tablename__ = 'data'
     id = Column(Integer, primary_key=True)
-    path = Column(String) # 文件路径
-    data_type = Column(String) # 数据类型
+    path = Column(String(500)) # 文件路径
+    data_type = Column(String(50)) # 数据类型
     create_user_id = Column(Integer, ForeignKey('user.id')) # 上传者
     create_time = Column(DateTime)
     alter_time = Column(DateTime)
@@ -41,7 +44,7 @@ class DataTable(Base):
 class UserFavoriteStockTable(Base):
     __tablename__ = 'user_favorite_stock'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    stock_id: Mapped[str] = mapped_column(String)
+    stock_id: Mapped[str] = mapped_column(String(20))  # 形如 sh600519
     user_id: Mapped[int] = Column(Integer, ForeignKey('user.id'))
     create_time: Mapped[datetime] = Column(DateTime, default=datetime.utcnow)
 
@@ -53,7 +56,7 @@ class ChatSessionTable(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('user.id'), nullable=False)
-    session_id = Column(String)
+    session_id = Column(String(32))  # 随机 12 位，留余量
     title = Column(String(100))
     start_time = Column(DateTime, default=datetime.now)
     feedback: Mapped[bool] = mapped_column(Boolean, nullable=True)
@@ -92,25 +95,48 @@ class UserMemoryTable(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
-DATABASE_URL = "sqlite:///./assert/sever.db" # 数据库连接地址
+# 数据库连接地址。
+#
+# ⚠️ 本模块**不自己加载 .env**（项目约定：由入口负责 load_dotenv）。所以：
+#   - main_server.py / main_mcp.py / eval/run_eval.py 都会先 load_dotenv，正常
+#   - 但独立脚本（比如你临时写的 python -c）忘了加载的话，这里会**静默走回
+#     SQLite** —— 你以为在建 MySQL 的表，其实建在了 assert/sever.db 上
+#   独立使用请先 `from dotenv import load_dotenv; load_dotenv()`，
+#   或者直接用 `python scripts/db_status.py`（它会把目标库打出来）。
+#
+# **默认仍然是 SQLite** —— 换 MySQL 只是往 .env 里加一行 DATABASE_URL：
+#   DATABASE_URL=mysql+pymysql://root:<密码>@127.0.0.1:3306/stock_bi?charset=utf8mb4
+#
+# 为什么默认值留 SQLite：一是让 clone 下来不配任何东西就能跑（CI、Docker、
+# 别人试用）；二是换库失败时**回退成本为零** —— 把 .env 那行删掉就回去了，
+# 不用改代码、不用回滚数据库。
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./assert/sever.db")
 DB_FILE_PATH = "./assert/sever.db"
 
-# SQLite 只会创建"文件"，不会创建"文件所在的目录"。
-# 目录不存在时（全新 clone 的仓库、干净的 CI 环境、新容器），
-# create_all 会直接以「unable to open database file」失败，连 import 都过不去。
-# 所以建表之前先把目录补上，让项目在任何机器上都能从零启动。
+# 这个目录必须**无条件**创建，不能只在 SQLite 分支里建：
+# 换到 MySQL 之后，业务库是远程的了，但 Agents SDK 的记忆库
+# （./assert/conversations.db）**仍然是本地 SQLite 文件**，它也需要这个目录。
+#
+# 另外 SQLite 只创建"文件"、不创建"文件所在的目录"：目录不存在时（全新 clone、
+# 干净的 CI 环境、新容器）create_all 会以「unable to open database file」失败，
+# 连 import 都过不去。
 os.makedirs(os.path.dirname(DB_FILE_PATH), exist_ok=True)
 
-# 建立与数据库的连接，是 SQLAlchemy 的核心入口
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} # SQLite多线程访问需要
-)
-# connect_args	{"check_same_thread": False}	SQLite 专用，允许多个线程访问同一个数据库
-# 为什么需要 check_same_thread: False？
-# FastAPI 是多线程环境
-# SQLite 默认只允许创建连接的线程访问
-# 设置 False 后，其他线程也能访问
+if DATABASE_URL.startswith("sqlite"):
+    # SQLite 专用参数：默认只允许创建连接的那个线程访问，而 FastAPI 是多线程的
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    # MySQL 的两个连接池参数是刚需，不是可选优化：
+    #   pool_pre_ping —— 每次取连接前先 ping 一下，避免拿到已被服务端断掉的连接
+    #   pool_recycle  —— MySQL 默认 8 小时回收空闲连接，不设的话会间歇报
+    #                    "MySQL server has gone away"，而且很难复现
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=3600,
+        pool_size=5,
+        max_overflow=10,
+    )
 
 Base.metadata.create_all(bind=engine) # 创建所有表
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

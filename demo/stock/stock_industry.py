@@ -2,10 +2,11 @@ import streamlit as st
 import requests
 import pandas as pd
 
+from demo.common import API_BASE_URL
+
 # 一句话总结：显示股票市场的所有行业板块（如电子、医药、金融等），让用户了解有哪些行业分类。
 
 # -------------------- API 配置 --------------------
-BASE_URL = "http://127.0.0.1:8000"
 INDUSTRY_ENDPOINT = "/stock/get_industry_code"
 
 
@@ -20,7 +21,7 @@ def fetch_industry_codes():
     通过调用后端 API 获取所有申万行业代码和名称。
     使用 st.cache_data 缓存结果，因为行业列表通常不会频繁变动。
     """
-    url = f"{BASE_URL}{INDUSTRY_ENDPOINT}"
+    url = f"{API_BASE_URL}{INDUSTRY_ENDPOINT}"
 
     try:
         # 发送 GET 请求
@@ -36,7 +37,7 @@ def fetch_industry_codes():
             return []
 
     except requests.exceptions.ConnectionError:
-        st.error(f"连接错误：无法连接到后端服务 ({BASE_URL})。请确保后端服务正在运行。")
+        st.error(f"连接错误：无法连接到后端服务 ({API_BASE_URL})。请确保后端服务正在运行。")
         return None
     except requests.exceptions.HTTPError as e:
         st.error(f"API 请求失败：{e}")

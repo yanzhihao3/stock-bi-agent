@@ -10,12 +10,11 @@ from fastmcp import Client  # MCP 客户端
 from typing import List, Any
 import pandas as pd         # 数据处理
 from fastmcp.tools import Tool
-from demo.common import API_BASE_URL, auth_headers
+from demo.common import API_BASE_URL, MCP_SERVER_URL, STOCK_API_BASE_URL, auth_headers
 
 # 一句话总结：这是一个股票 AI 助手的前端界面，可以：与 AI 对话 调用 MCP 工具（天气、汇率等） 显示股票 K 线图
 
-# FastMCP 服务器地址 作用：连接你之前启动的 MCP 聚合服务器（24个工具）
-MCP_SERVER_URL = "http://127.0.0.1:8900/sse"
+# FastMCP 服务器地址：统一由 demo/common.py 提供（环境变量可覆盖）
 
 # 连接 MCP 服务器
 # 获取所有可用的工具列表
@@ -179,7 +178,7 @@ def fetch_k_line_data(
     通过调用后端 API 获取 K 线数据。
     """
 
-    BASE_URL = "http://127.0.0.1:8000/stock/"
+    BASE_URL = f"{STOCK_API_BASE_URL}/"
     url = f"{BASE_URL}{endpoint}"
 
     # 注意：您的 curl 示例中，日期参数被双引号包裹，但在 Python requests 中，

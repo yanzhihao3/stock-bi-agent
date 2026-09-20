@@ -183,6 +183,8 @@ POST /v1/chat/
 │   ├── errors.py           # 统一错误响应
 │   ├── mcp_adapter.py      # MCP SSE → LangChain 工具适配器
 │   ├── redis_client.py     # Redis 缓存客户端
+│   ├── observability.py    # 日志配置 + request id 贯穿 + 出口脱敏
+│   ├── config.py           # 跨进程地址配置（MCP 服务地址）
 │   └── schema_normalizer.py# 响应数据规范化
 ├── api/                    # MCP 工具服务
 │   ├── autostock.py        # 股票数据（带 Redis 缓存）
@@ -196,14 +198,20 @@ POST /v1/chat/
 ├── eval/                   # 工具选择评测
 │   ├── golden_set.yaml     # 评测集（17 条用例 / 8 类场景）
 │   ├── run_eval.py         # 跑批 + 判定 + 报告
-│   └── concurrency_check.py# MCP 共享连接的并发安全检查
+│   ├── concurrency_check.py# MCP 共享连接的并发安全检查
+│   ├── check_numbers.py    # 回答数字一致性核对（离线，0 token）
+│   ├── report.py           # 可观测性报表（延迟/token/工具健康度）
+│   └── replay_memory.py    # 复现一次记忆提取（排查用）
+├── scripts/
+│   ├── db_status.py        # 看当前连的哪个库、表建了没、各表多少行
+│   └── migrate_sqlite_to_mysql.py  # SQLite → MySQL 数据迁移
 ├── conftest.py             # pytest 全局配置（加载 .env）
 └── .github/workflows/      # GitHub Actions CI/CD
 ```
 
 ## 测试
 
-**单元测试**（39 个，不需要外部依赖）：
+**单元测试**（134 个，全部是纯函数测试，不需要外部服务）：
 
 ```bash
 pytest test/
@@ -258,4 +266,24 @@ Redis 不可用时自动降级为直调外部 API，不影响服务。
 
 ## 数据库
 
-默认使用 SQLite，存储路径：`assert/sever.db`
+**业务库**默认用 SQLite（`assert/sever.db`），**不配任何东西就能跑**。想换 MySQL
+只需在 `.env` 里加一行，代码不动：
+
+```
+DATABASE_URL=mysql+pymysql://root:密码@127.0.0.1:3306/stock_bi?charset=utf8mb4
+```
+
+```bash
+# 建库（必须是 utf8mb4，否则中文会存成问号）
+mysql -u root -p -e "CREATE DATABASE stock_bi DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+python scripts/db_status.py                          # 确认连的是哪个库、表建了没
+python scripts/migrate_sqlite_to_mysql.py --check    # 迁移前先核对行数，不写数据
+python scripts/migrate_sqlite_to_mysql.py            # 迁数据
+```
+
+回退成本为零：把 `.env` 里那行删掉就又回到 SQLite，源库全程没被改过。
+
+> ⚠️ **Agents SDK 的记忆库 `assert/conversations.db` 不跟着迁**。那是 SDK 自带的
+> SQLite 实现（`AdvancedSQLiteSession`），表结构不受本项目控制 —— 换不动，也不该换。
+> 所以换到 MySQL 后是「业务数据在 MySQL、会话记忆在本地 SQLite」的双库结构。

@@ -2,11 +2,11 @@ import streamlit as st
 import requests
 import pandas as pd
 
+from demo.common import API_BASE_URL
+
 # 一句话总结：类似股票软件的"搜索框"，输入"茅台"就能找到所有名称或代码包含"茅台"的股票。
 
 # -------------------- API 配置 --------------------
-# 假设您的后端服务运行在 FastAPI 的默认地址和端口
-BASE_URL = "http://127.0.0.1:8000"
 SEARCH_ENDPOINT = "/stock/get_stock_code"
 
 if st.session_state.get('logged', False):
@@ -21,7 +21,7 @@ def fetch_stock_codes(keyword: str):
         return []
 
     # 完整 API URL
-    url = f"{BASE_URL}{SEARCH_ENDPOINT}"
+    url = f"{API_BASE_URL}{SEARCH_ENDPOINT}"
 
     # 构造请求参数
     params = {"keyword": keyword}
@@ -40,7 +40,7 @@ def fetch_stock_codes(keyword: str):
         return []
 
     except requests.exceptions.ConnectionError:
-        st.error(f"连接错误：无法连接到后端服务 ({BASE_URL})。请确保后端服务正在运行。")
+        st.error(f"连接错误：无法连接到后端服务 ({API_BASE_URL})。请确保后端服务正在运行。")
         return None
     except requests.exceptions.HTTPError as e:
         st.error(f"API 请求失败：{e}")

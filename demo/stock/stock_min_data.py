@@ -4,10 +4,11 @@ import pandas as pd
 import plotly.express as px # 绘制分时图（比plotly.graph_objects更简单）
 from datetime import datetime
 
+from demo.common import STOCK_API_BASE_URL
+
 # 一句话总结：类似股票软件的"分时图"功能，显示股票当天的实时价格走势和每分钟成交量。
 
 # -------------------- API 配置 --------------------
-BASE_URL = "http://127.0.0.1:8000/stock"
 MINUTE_DATA_ENDPOINT = "/get_stock_minute_data"
 
 if st.session_state.get('logged', False):
@@ -23,7 +24,7 @@ def fetch_minute_data(code: str):
     if not code:
         return None, None
 
-    url = f"{BASE_URL}{MINUTE_DATA_ENDPOINT}"
+    url = f"{STOCK_API_BASE_URL}{MINUTE_DATA_ENDPOINT}"
     params = {"code": code}
 
     try:
@@ -46,7 +47,7 @@ def fetch_minute_data(code: str):
             return None, None
 
     except requests.exceptions.ConnectionError:
-        st.error(f"连接错误：无法连接到后端服务 ({BASE_URL})。请确保后端服务正在运行。")
+        st.error(f"连接错误：无法连接到后端服务 ({STOCK_API_BASE_URL})。请确保后端服务正在运行。")
         return None, None
     except Exception as e:
         st.error(f"获取分时数据时发生错误：{e}")

@@ -11,6 +11,8 @@ from langchain_core.tools import StructuredTool
 from mcp.client.sse import sse_client
 from mcp.client.session import ClientSession
 
+from services.config import MCP_SERVER_URL
+
 # _server_url	str	MCP服务地址，默认本地8900端口的SSE端点
 # _sse_ctx	上下文管理器	SSE连接上下文，用于资源清理
 # _session	ClientSession	MCP客户端会话，负责发送请求
@@ -21,7 +23,7 @@ from mcp.client.session import ClientSession
 class MCPClientManager:
     """管理 MCP SSE 连接，提供 LangChain 兼容的工具"""
 
-    def __init__(self, server_url: str = "http://localhost:8900/sse"):
+    def __init__(self, server_url: str = MCP_SERVER_URL):
         self._server_url = server_url
         self._sse_ctx: Optional[Any] = None
         self._session: Optional[ClientSession] = None
@@ -197,7 +199,7 @@ class MCPClientManager:
 _default_manager: Optional[MCPClientManager] = None
 
 
-def get_mcp_manager(server_url: str = "http://localhost:8900/sse") -> MCPClientManager:
+def get_mcp_manager(server_url: str = MCP_SERVER_URL) -> MCPClientManager:
     """返回进程内共享的 MCP 连接管理器（懒创建）。
 
     为什么要有这个函数 —— 原来每次对话都新建一个 manager、用完 disconnect()，

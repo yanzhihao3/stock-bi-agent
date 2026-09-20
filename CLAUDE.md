@@ -99,9 +99,25 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 - `models/orm.py` - SQLAlchemy ORM 模型（数据库表）
 
 ### 数据库
-- `assert/sever.db` - 用户、会话、消息、自选股、长期记忆（user_memory）
-- `assert/conversations.db` - Agent 记忆（SafeSQLiteSession）
+- **业务库**：默认 SQLite `assert/sever.db`（用户、会话、消息、自选股、长期记忆）。
+  连接串从 `DATABASE_URL` 读，**默认值留 SQLite 是刻意的** —— clone 下来零配置能跑，
+  而且换 MySQL 失败时回退成本为零（删掉 .env 那行即可）。engine 按方言分支：
+  SQLite 用 `check_same_thread=False`，MySQL 用 `pool_pre_ping` + `pool_recycle`
+  （后者是刚需，不配会间歇报 "MySQL server has gone away"）。
+- ⚠️ **`String` 列必须带长度**。MySQL 的 VARCHAR 强制要求，SQLite 不要求 ——
+  漏了会直接在 `create_all` 报 `VARCHAR requires a length on dialect mysql`。
+  已补齐 7 处（user_name/user_role/password/path/data_type/stock_id/session_id）。
+- ⚠️ **`user_memory.key` 里的 key 是 MySQL 保留字**。ORM 路径不用管
+  （SQLAlchemy 自动加反引号，实测通过），但**手写 SQL 必须自己加** ——
+  迁移脚本第一次就是挂在这（`INSERT INTO user_memory (id, user_id, key, ...)` 报 1064）。
+- `assert/conversations.db` - Agent 记忆（`SafeSQLiteSession` / `AdvancedSQLiteSession`）。
+  **这个不跟着迁 MySQL**：是 SDK 自带实现、表结构不受本项目控制，换不动也不该换。
+  所以换库后是「业务数据在 MySQL、会话记忆在本地 SQLite」的双库结构。
 - 删除会话/用户时：业务数据 + conversations.db 同步清理，无孤儿数据
+- 换库/查库用 `scripts/db_status.py`（会把最终连的哪个库打出来）；
+  迁数据用 `scripts/migrate_sqlite_to_mysql.py`（源库只读，带 --check / --reset）
+- ⚠️ `models/orm.py` **自己不加载 .env**（项目约定由入口 load_dotenv）。独立脚本
+  忘了加载的话会**静默走回 SQLite** —— 以为在建 MySQL 的表，其实建在 sever.db 上。
 
 ### CI/CD (`.github/workflows/ci.yml`)
 - push/PR 到 main 自动触发
@@ -153,6 +169,21 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
   形状规则的真值表在 `test/test_tool_output.py`。
 - `eval/report.py` 出健康度报表。**老轨迹没有判定字段时会单独计"未判定"**，
   不能默认当成正常 —— 否则真有故障时报表会显示一切健康。
+
+### 地址与部署拓扑 (`services/config.py` + `demo/common.py`)
+
+- 后端要用的跨进程地址集中在 `services/config.py`（目前是 `MCP_SERVER_URL`）；
+  前端在 `demo/common.py`（`API_BASE_URL` / `STOCK_API_BASE_URL` / `MCP_SERVER_URL`）。
+  **两处都要改时记得一起改** —— 它们是不同进程，读同一批环境变量但各自解析。
+- 这些常量**全部从环境变量读，默认值是 localhost**。默认 localhost 是因为现在
+  docker-compose 把三个进程放在同一个容器里（容器之间 localhost 不是同一个）。
+  想拆容器/跨机器部署，注入 `API_BASE_URL=http://api:8000` 之类即可，代码不用动。
+- ⚠️ 历史上 8 个 `demo/stock/*.py` 各自写了一份 `BASE_URL`，一共十来处写死的地址；
+  已全部收敛到 `demo/common.py`。**新增前端页面请从这里取地址**，不要自己写。
+- `eval/run_eval.py` 里的 `MCP_HOST/MCP_PORT` 是本地开发脚本自用的，没跟着收敛。
+- ⚠️ 批量改这些页面时注意缩进：`url = f"..."` 深浅不一（有的在函数体顶层、
+  有的在嵌套块里）。踩过 —— 统一按 4 空格替换后，4 个文件变成
+  `IndentationError`。改完跑一次 `python -m compileall -q demo` 就能发现。
 
 ## 启动方式
 

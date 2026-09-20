@@ -3,10 +3,11 @@ import requests
 import pandas as pd
 from typing import Optional # 类型注解，表示参数可以是None
 
+from demo.common import API_BASE_URL
+
 # 一句话总结：类似股票软件的"涨跌幅排行榜"，可以根据市场、行业、涨跌幅等条件筛选排序，支持分页查看。
 
 # -------------------- API 配置 --------------------
-BASE_URL = "http://127.0.0.1:8000"
 RANK_ENDPOINT = "/stock/get_stock_rank"
 # --------------------------------------------------
 
@@ -48,7 +49,7 @@ def fetch_stock_rank(
     """
     通过调用后端 API 获取股票排行数据。
     """
-    url = f"{BASE_URL}{RANK_ENDPOINT}"
+    url = f"{API_BASE_URL}{RANK_ENDPOINT}"
 
     params = {
         "node": node,           # 市场代码
@@ -73,7 +74,7 @@ def fetch_stock_rank(
             return None
 
     except requests.exceptions.ConnectionError:
-        st.error(f"连接错误：无法连接到后端服务 ({BASE_URL})。请确保后端服务正在运行。")
+        st.error(f"连接错误：无法连接到后端服务 ({API_BASE_URL})。请确保后端服务正在运行。")
         return None
     except Exception as e:
         st.error(f"发生未知错误：{e}")

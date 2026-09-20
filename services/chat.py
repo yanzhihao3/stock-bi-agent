@@ -36,6 +36,7 @@ from services.chat_common import (
 )
 from services.memory import schedule_memory_extraction
 from services.observability import new_request_id, request_id
+from services.config import MCP_SERVER_URL
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +289,7 @@ async def chat(user_name: str, session_id: Optional[str], task: Optional[str],
 
     mcp_server = MCPServerSse(
         name="SSE Python Server",
-        params={"url": "http://localhost:8900/sse"},
+        params={"url": MCP_SERVER_URL},
         cache_tools_list=False,
         tool_filter=tool_mcp_tools_filter,
         client_session_timeout_seconds=20,

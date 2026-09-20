@@ -52,6 +52,9 @@ plotly==6.7.0
 
 # ---- 数据库与缓存 ----
 SQLAlchemy==2.0.48
+# MySQL 驱动。选 pymysql 而不是 mysqlclient：纯 Python，Windows 上不用装编译器。
+# 只有把 DATABASE_URL 指向 MySQL 时才会真正用到（默认走 SQLite）。
+PyMySQL==2.2.8
 redis==6.4.0
 
 # ---- 认证与网络 ----

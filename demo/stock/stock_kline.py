@@ -6,10 +6,11 @@ import pandas as pd
 import plotly.graph_objects as go # 绘制K线图（蜡烛图）
 from datetime import date, timedelta
 
+from demo.common import STOCK_API_BASE_URL
+
 # 一句话总结：类似股票软件的K线图功能，输入股票代码和时间范围，显示该股票的日K/周K/月K线图和成交量。
 
 # -------------------- API 配置 --------------------
-BASE_URL = "http://127.0.0.1:8000/stock"
 # --------------------------------------------------
 
 # K线类型到API端点的映射
@@ -37,7 +38,7 @@ def fetch_k_line_data(
         st.error(f"无效的 K 线类型: {line_type}")
         return None
 
-    url = f"{BASE_URL}{endpoint}"
+    url = f"{STOCK_API_BASE_URL}{endpoint}"
 
     # 注意：您的 curl 示例中，日期参数被双引号包裹，但在 Python requests 中，
     # 传递日期字符串通常不需要额外的引号，后端应自行解析。
@@ -79,7 +80,7 @@ def fetch_k_line_data(
             return None
 
     except requests.exceptions.ConnectionError:
-        st.error(f"连接错误：无法连接到后端服务 ({BASE_URL})。请确保后端服务正在运行。")
+        st.error(f"连接错误：无法连接到后端服务 ({STOCK_API_BASE_URL})。请确保后端服务正在运行。")
         return None
     except Exception as e:
         st.error(f"获取 K 线数据时发生错误：{e}")

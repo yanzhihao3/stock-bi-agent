@@ -3,12 +3,11 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-from demo.common import auth_headers
+from demo.common import API_BASE_URL, auth_headers
 
 # 一句话总结：类似股票软件的"自选股"功能，用户可以管理自己关注的股票列表。
 
 # -------------------- API 配置 --------------------
-BASE_URL = "http://127.0.0.1:8000"
 LIST_ENDPOINT = "/v1/stock/list_fav_stock"
 ADD_ENDPOINT = "/v1/stock/add_fav_stock"
 DEL_ENDPOINT = "/v1/stock/del_fav_stock"
@@ -29,7 +28,7 @@ def _call_api(endpoint: str, params: dict = None):
     通用的 API 调用函数，适用于所有 POST 请求。
     (注意: 根据您的 curl 示例，所有操作都是 POST)
     """
-    url = f"{BASE_URL}{endpoint}"
+    url = f"{API_BASE_URL}{endpoint}"
 
     try:
         # 所有收藏操作都是 POST，参数通过 URL 传递
@@ -54,7 +53,7 @@ def _call_api(endpoint: str, params: dict = None):
             return {"success": False, "message": data.get("message", "操作失败"), "data": None}
 
     except requests.exceptions.ConnectionError:
-        return {"success": False, "message": f"连接错误：无法连接到后端服务 ({BASE_URL})。", "data": None}
+        return {"success": False, "message": f"连接错误：无法连接到后端服务 ({API_BASE_URL})。", "data": None}
     except Exception as e:
         return {"success": False, "message": f"发生未知错误：{e}", "data": None}
 

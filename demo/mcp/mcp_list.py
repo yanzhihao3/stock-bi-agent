@@ -7,6 +7,8 @@ from fastmcp.tools import Tool
 from typing import List
 import pandas as pd
 
+from demo.common import MCP_SERVER_URL   # 地址统一在 demo/common.py（环境变量可覆盖）
+
 # 一句话总结：这是一个"工具说明书"页面，让你查看 MCP 服务器上所有工具的名称、功能描述、参数要求。
 # 辅助函数：判断工具类别 (已移除，根据用户要求)
 
@@ -81,8 +83,6 @@ def display_tool_info(tool: Tool):
 
 # --- Streamlit 主应用逻辑 ---主页面布局
 def main():
-    MCP_SERVER_URL = "http://127.0.0.1:8900/sse"
-
     # 状态展示
     status_container = st.container()
     with status_container:
