@@ -4,6 +4,7 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Tex
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from datetime import datetime
 from sqlalchemy.orm import Mapped, mapped_column
+from models.db_url import build_database_url
 
 # 这段代码是数据库ORM模型定义和初始化文件，使用 SQLAlchemy 定义数据库表结构。让我详细解析：
 # 一句话总结：定义数据库的表结构，并创建数据库连接，是数据持久化的基础。
@@ -36,8 +37,10 @@ class UserTable(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # ⚠️ MySQL 的 VARCHAR 必须带长度（SQLite 不要求），所以这些列都得写死长度，
-    # 否则 Base.metadata.create_all() 会直接报
+    # 否则建表时会直接报
     #   CompileError: VARCHAR requires a length on dialect mysql
+    #（以前是 `Base.metadata.create_all()` 报，现在建表由 alembic upgrade 触发，
+    #  报错时机变了但原因一样）
     #
     # ⚠️ 而且长度**会被强制**：注册时填一个 80 字的用户名，MySQL 直接报
     #   1406 Data too long，在 SQLite 上却不会。所以 routers/user.py 里加了校验。
@@ -116,7 +119,7 @@ class UserMemoryTable(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
-# 数据库连接地址。
+# 数据库连接地址（URL 对象，不是字符串）。
 #
 # ⚠️ 本模块**不自己加载 .env**（项目约定：由入口负责 load_dotenv）。所以：
 #   - main_server.py / main_mcp.py / eval/run_eval.py 都会先 load_dotenv，正常
@@ -125,13 +128,13 @@ class UserMemoryTable(Base):
 #   独立使用请先 `from dotenv import load_dotenv; load_dotenv()`，
 #   或者直接用 `python scripts/db_status.py`（它会把目标库打出来）。
 #
-# **默认仍然是 SQLite** —— 换 MySQL 只是往 .env 里加一行 DATABASE_URL：
-#   DATABASE_URL=mysql+pymysql://root:<密码>@127.0.0.1:3306/stock_bi?charset=utf8mb4
+# **只有两种状态**（解析逻辑与理由见 models/db_url.py）：
+#   不配 DB_*        → SQLite（零配置能跑，CI/Docker 靠它）
+#   配了 DB_PASSWORD → MySQL（DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME）
 #
-# 为什么默认值留 SQLite：一是让 clone 下来不配任何东西就能跑（CI、Docker、
-# 别人试用）；二是换库失败时**回退成本为零** —— 把 .env 那行删掉就回去了，
-# 不用改代码、不用回滚数据库。
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./assert/sever.db")
+# 为什么默认值留 SQLite：一是让 clone 下来不配任何东西就能跑；二是换库失败时
+# **回退成本为零** —— 把 .env 里那几行注释掉就回去了，不用改代码、不用回滚数据库。
+DATABASE_URL = build_database_url()
 DB_FILE_PATH = "./assert/sever.db"
 
 # 这个目录必须**无条件**创建，不能只在 SQLite 分支里建：
@@ -139,11 +142,10 @@ DB_FILE_PATH = "./assert/sever.db"
 # （./assert/conversations.db）**仍然是本地 SQLite 文件**，它也需要这个目录。
 #
 # 另外 SQLite 只创建"文件"、不创建"文件所在的目录"：目录不存在时（全新 clone、
-# 干净的 CI 环境、新容器）create_all 会以「unable to open database file」失败，
-# 连 import 都过不去。
+# 干净的 CI 环境、新容器）连库都会以「unable to open database file」失败。
 os.makedirs(os.path.dirname(DB_FILE_PATH), exist_ok=True)
 
-if DATABASE_URL.startswith("sqlite"):
+if DATABASE_URL.get_backend_name() == "sqlite":
     # SQLite 专用参数：默认只允许创建连接的那个线程访问，而 FastAPI 是多线程的
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
@@ -159,7 +161,7 @@ else:
         max_overflow=10,
     )
 
-Base.metadata.create_all(bind=engine) # 创建所有表
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # autocommit	False	不自动提交，需要手动 commit()
 # autoflush	False	不自动刷新，需要手动 flush()

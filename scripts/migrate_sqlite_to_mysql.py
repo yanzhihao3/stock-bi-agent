@@ -6,13 +6,14 @@
     python scripts/migrate_sqlite_to_mysql.py           # 真的迁
 
 前提（三条都要满足）
-    1. `.env` 里配好了 DATABASE_URL，指向 MySQL
+    1. `.env` 里配好了 MySQL 的五个分量（由 models/db_url.py 解析）：
+         DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME
     2. MySQL 那边的表已经建好：先跑一次 `python -c "import models.orm"`
     3. 目标库是空的（脚本会检查，不空就拒绝执行，除非加 --force）
 
 安全设计
     * **源库永远是只读的** —— 全程只 SELECT，不动 assert/sever.db 一个字节
-    * DATABASE_URL 不是 MySQL 时直接拒绝运行（防止误把 SQLite 当目标、自己覆盖自己）
+    * 目标不是 MySQL 时直接拒绝运行（防止误把 SQLite 当目标、自己覆盖自己）
     * 目标表已有数据时拒绝运行（默认），避免重复插入出一堆重复行；确需重来用 --reset
     * 按外键依赖顺序插入；插完核对两边行数
 
@@ -71,14 +72,17 @@ def main() -> None:
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
 
-    target = os.environ.get("DATABASE_URL", "")
-    if not target:
-        sys.exit("[中断] .env 里没有 DATABASE_URL —— 没配的话代码会走 SQLite，"
-                 "这个脚本就没有意义了。")
-    if target.startswith("sqlite"):
-        sys.exit(f"[中断] DATABASE_URL 指向的还是 SQLite（{target}）。\n"
-                 "       这个脚本是往 MySQL 迁的，请先把它改成 "
-                 "mysql+pymysql://... 再运行。")
+    # ⚠️ 复用和 models/orm.py 同一套解析逻辑（models/db_url），**不要自己读环境变量**。
+    # 自己读的话只认某一个变量名，配置一改名就会被忽略 —— 于是明明配了 MySQL，
+    # 脚本却报"没配"，两条路就此分叉。这是"多个入口读同一份配置"的通病：
+    # 只要有一处不统一，就会有行为差异。
+    from models.db_url import build_database_url, describe
+
+    target = build_database_url()
+    if target.get_backend_name() != "mysql":
+        sys.exit(f"[中断] 目标库不是 MySQL，而是 {describe(target)}。\n"
+                 "       这个脚本是往 MySQL 迁的 —— 请在 .env 里配好这五个：\n"
+                 "         DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME")
 
     from sqlalchemy import create_engine, inspect, text
 
@@ -101,7 +105,9 @@ def main() -> None:
             return conn.execute(text(f"SELECT COUNT(*) FROM {q(table)}")).scalar() or 0
 
     print(f"源库   {source_path}（只读）")
-    print(f"目标   {target.split('@')[-1]}")   # 只打 host/db，避免把密码打出来
+    # 打码用 SQLAlchemy 内建的 render_as_string(hide_password=True)，
+    # 不自己按 @ 切字符串 —— 密码转义之后可能根本没有 @ 在预期位置
+    print(f"目标   {describe(target)}")
     print()
     print(f"{'表':<22}{'源库':>8}{'目标库':>10}")
     print("-" * 40)
@@ -162,7 +168,7 @@ def main() -> None:
             ok = False
         print(f"  {table:<22} 源 {n_src:>4}  目标 {n_dst:>4}   {mark}")
 
-    print("\n源库没有被修改，回退只需把 .env 里的 DATABASE_URL 删掉。")
+    print("\n源库没有被修改，回退只需把 .env 里的 DB_* 那几行注释掉。")
     sys.exit(0 if ok else 1)
 
 

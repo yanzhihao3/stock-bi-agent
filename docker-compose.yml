@@ -56,6 +56,12 @@ services:
       - sh
       - -c
       - |
+        # 先建表/升级表结构：models/orm.py 里不再有 create_all 了，由 Alembic 管。
+        # 容器里没有 .env 的 MySQL 配置时会走默认 SQLite；配了就走 MySQL。
+        # 失败就用 set -e 在这行终止，不要带着没建表的库把三个进程起起来。
+        set -e
+        python -m alembic upgrade head
+        set +e
         python main_server.py &
         python main_mcp.py &
         exec streamlit run demo/streamlit_demo.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false

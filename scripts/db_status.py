@@ -4,14 +4,15 @@
 用法
     python scripts/db_status.py
 
-为什么需要它（而不是 `python -c "import models.orm"`）：
+为什么需要它（而不是直接 import models.orm 看）：
     models/orm.py 自己不加载 .env —— 项目约定由入口负责 load_dotenv()。
-    所以直接 import 它的话，`.env` 里的 DATABASE_URL 读不到，会**静默走回 SQLite**，
-    你会以为在建 MySQL 的表，其实建在了 assert/sever.db 上。
-    这个脚本先 load_dotenv 再 import，并把**最终选中的库**明确打出来，
-    顺带触发建表（import models.orm 时 create_all 就跑了）。
+    所以直接 import 它的话，`.env` 里的 DB_* 读不到，会**静默走回 SQLite**，
+    你会以为在查 MySQL，其实查的是 assert/sever.db。
+    这个脚本先 load_dotenv 再 import，并把**最终选中的库**明确打出来。
 
-它只读不写数据：建表是 create_all 的行为，除此之外只做 SELECT COUNT。
+它**只读**：不建表、不改数据，只做 SHOW / SELECT COUNT / 读 alembic_version。
+    （表结构归 Alembic 管 —— models/orm.py 里的 create_all 已经删掉了。
+      缺表的话跑 `python -m alembic upgrade head`，不是跑这个脚本。）
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def main() -> None:
     dialect = orm.engine.dialect.name
     print(f"连接串      {mask(url)}")
     print(f"数据库类型  {dialect}"
-          + ("   ← 默认值，没配 DATABASE_URL" if dialect == "sqlite" else ""))
+          + ("   ← 默认值，.env 里没配 DB_*" if dialect == "sqlite" else ""))
 
     if dialect != "sqlite":
         with orm.engine.connect() as conn:
@@ -56,7 +57,7 @@ def main() -> None:
             print(f"库字符集    {charset}"
                   + ("" if charset == "utf8mb4" else "   ⚠️ 不是 utf8mb4，中文会有问题"))
 
-    # import 时 create_all 已经跑完，这里只读结果
+    # 只读结果，不建表（表结构归 Alembic 管）
     present = set(inspect(orm.engine).get_table_names())
     print()
     print(f"{'表':<22}{'存在':>6}{'行数':>8}")
@@ -71,9 +72,20 @@ def main() -> None:
 
     missing = [t for t in TABLES if t not in present]
     print()
+
+    # 表结构的版本号（Alembic 的 alembic_version 表）。
+    # 它决定了 `alembic upgrade head` 会不会重复建表 —— 所以和"表齐不齐"一样重要。
+    if "alembic_version" in present:
+        with orm.engine.connect() as conn:
+            rows = conn.execute(text("SELECT version_num FROM alembic_version")).fetchall()
+        print(f"表结构版本  {[r[0] for r in rows] or '（空 → 还没 stamp/upgrade 过）'}")
+    else:
+        print("表结构版本  （没有 alembic_version 表 → 这个库还没接入 Alembic）")
+
     if missing:
         print(f"缺表：{missing}")
-        print("（正常情况下 import models.orm 会 create_all 建全，缺表说明建表失败了）")
+        print("→ 跑 `python -m alembic upgrade head` 建表"
+              "（models/orm.py 里已经没有 create_all 了，表结构归 Alembic 管）")
     else:
         print("6 张表齐全。")
 

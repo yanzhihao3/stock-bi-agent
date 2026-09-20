@@ -100,12 +100,22 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
 
 ### 数据库
 - **业务库**：默认 SQLite `assert/sever.db`（用户、会话、消息、自选股、长期记忆）。
-  连接串从 `DATABASE_URL` 读，**默认值留 SQLite 是刻意的** —— clone 下来零配置能跑，
-  而且换 MySQL 失败时回退成本为零（删掉 .env 那行即可）。engine 按方言分支：
-  SQLite 用 `check_same_thread=False`，MySQL 用 `pool_pre_ping` + `pool_recycle`
-  （后者是刚需，不配会间歇报 "MySQL server has gone away"）。
+  **连接配置只有两种状态**（解析在 `models/db_url.py`）：不配 `DB_*` 走 SQLite；
+  配了 `DB_PASSWORD` 就用 `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` 拼 MySQL。
+  - ⚠️ **刻意只有「分量」一种写法，不提供整条 `DATABASE_URL`**。原因是连接串里的
+    `@ : / #` 是结构性字符，密码里出现就会把 URL 切错（实测 `p@ss123` 让 host 变成
+    `ss123@127.0.0.1`，而报错说"连不上主机"，完全指不到密码）。分量写法用
+    `URL.create()` 负责转义，使用者不用关心密码里有什么字符。
+    *（曾经两种写法都支持，结果使用者要理解两个概念 + 记住优先级，纯自找麻烦，已删。）*
+  - **默认值留 SQLite 是刻意的** —— clone 下来零配置能跑，且换库失败时回退成本为零。
+  - engine 按方言分支：SQLite 用 `check_same_thread=False`；MySQL 用
+    `pool_pre_ping` + `pool_recycle`（后者是刚需，不配会间歇报
+    "MySQL server has gone away"，很难复现）。
+  - ⚠️ `conftest.py` 会**把 DB_PASSWORD 摘掉**，让 pytest 固定跑 SQLite ——
+    测试要 hermetic，不依赖外部服务；也让本地和 CI 行为一致。
+    代价是单测不验证 MySQL 那条路，那个交给 `scripts/db_status.py` 和实跑服务。
 - ⚠️ **`String` 列必须带长度**。MySQL 的 VARCHAR 强制要求，SQLite 不要求 ——
-  漏了会直接在 `create_all` 报 `VARCHAR requires a length on dialect mysql`。
+  漏了建表时会报 `VARCHAR requires a length on dialect mysql`。
   已补齐 7 处（user_name/user_role/password/path/data_type/stock_id/session_id）。
 - ⚠️ **`user_memory.key` 里的 key 是 MySQL 保留字**。ORM 路径不用管
   （SQLAlchemy 自动加反引号，实测通过），但**手写 SQL 必须自己加** ——
@@ -118,6 +128,36 @@ MCP 服务聚合器 (main_mcp.py, 端口 8900)
   迁数据用 `scripts/migrate_sqlite_to_mysql.py`（源库只读，带 --check / --reset）
 - ⚠️ `models/orm.py` **自己不加载 .env**（项目约定由入口 load_dotenv）。独立脚本
   忘了加载的话会**静默走回 SQLite** —— 以为在建 MySQL 的表，其实建在 sever.db 上。
+
+### 表结构版本管理 (`alembic/`)
+
+- **建表不再靠 `create_all`**（那行已从 `models/orm.py` 删掉），改由 Alembic 管：
+  ```bash
+  python -m alembic upgrade head     # 建表 / 升级到最新（首次运行、拉新代码后都要跑）
+  python -m alembic current          # 看当前库是哪个版本
+  ```
+  CI 和 docker-compose 里都已经加了 `upgrade head` —— **不加的话全新环境没有表**。
+- ⚠️ **为什么必须删 `create_all`**（实测对照，不是理论）：`alembic/env.py` 要
+  `from models.orm import ...`，而 orm.py 在 import 时会 `create_all`。于是
+  autogenerate 时 `create_all` **抢先把表建好了**，Alembic 一对比「没有差异」→
+  生成空迁移。实测：有 `create_all` 时 0 个 `op.`；删掉后 6 个 `create_table`。
+- ⚠️ `alembic.ini` 里**不要填 `sqlalchemy.url`**。那文件会提交进 git，填了连接串
+  等于把数据库密码写进仓库；而且会变成"第二份配置"，改一处忘一处。
+  `env.py` 已经改成复用 `models.orm.engine`，目标库完全由 `.env` 决定 ——
+  所以**同一套迁移能跑 SQLite 也能跑 MySQL**（都实测过）。
+- ⚠️ `env.py` 里 `load_dotenv()` 必须在 `from models.orm import ...` **之前**，
+  否则 orm.py 读不到 `.env`，会对着 SQLite 生成迁移而实际要迁移的是 MySQL。
+- 两个改列相关的开关：`render_as_batch=True`（SQLite 的 ALTER 很弱，改列要靠
+  "建新表→拷数据→换名"模拟）、`compare_type=True`（默认不检测列类型变化）。
+- 日常加字段的流程：
+  ```bash
+  # 1. 改 models/orm.py
+  python -m alembic revision --autogenerate -m "add xxx to chat_message"
+  # 2. 打开生成的文件，人工检查一遍（autogenerate 不是万能的）
+  python -m alembic upgrade head
+  ```
+  ⚠️ `--autogenerate` 是拿「**当前引擎指向的那个库**」和模型对比，生成**一次**即可
+  （迁移文件本身是方言无关的）。生成前要确认库在 head，否则会把已有的表当成新增。
 
 ### CI/CD (`.github/workflows/ci.yml`)
 - push/PR 到 main 自动触发

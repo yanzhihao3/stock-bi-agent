@@ -134,7 +134,21 @@ MEMORY_MODEL=             # 提取用模型，默认同 OPENAI_MODEL
 docker run -d -p 6379:6379 --name redis-stock redis:7
 ```
 
-### 4. 启动后端服务
+### 4. 建表（首次运行必做）
+
+```bash
+python -m alembic upgrade head
+```
+
+表结构由 **Alembic** 管理（`models/orm.py` 里**没有** `create_all` 了）。
+首次运行、或者拉下来的代码有新的迁移时，都要跑这一条。
+
+```bash
+# 看一眼当前库是哪个版本
+python -m alembic current
+```
+
+### 5. 启动后端服务
 
 ```bash
 python main_server.py          # FastAPI 后端 (端口 8000)
@@ -205,6 +219,10 @@ POST /v1/chat/
 ├── scripts/
 │   ├── db_status.py        # 看当前连的哪个库、表建了没、各表多少行
 │   └── migrate_sqlite_to_mysql.py  # SQLite → MySQL 数据迁移
+├── alembic/                # 表结构版本管理（数据库的 Git）
+│   ├── env.py              # 复用项目 engine → 同一套迁移跑 SQLite / MySQL
+│   └── versions/           # 迁移文件（要提交进 git）
+├── alembic.ini             # Alembic 配置（刻意不填连接串，见 CLAUDE.md）
 ├── conftest.py             # pytest 全局配置（加载 .env）
 └── .github/workflows/      # GitHub Actions CI/CD
 ```
@@ -267,11 +285,20 @@ Redis 不可用时自动降级为直调外部 API，不影响服务。
 ## 数据库
 
 **业务库**默认用 SQLite（`assert/sever.db`），**不配任何东西就能跑**。想换 MySQL
-只需在 `.env` 里加一行，代码不动：
+只需在 `.env` 里加这五行，代码不动：
 
 ```
-DATABASE_URL=mysql+pymysql://root:密码@127.0.0.1:3306/stock_bi?charset=utf8mb4
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=你的密码
+DB_NAME=stock_bi
 ```
+
+> 用**分量**而不是一整条连接串：连接串里的 `@ : / #` 是结构性字符，密码里出现
+> 就会把 URL 切错（密码 `p@ss123` 会让 host 变成 `ss123@127.0.0.1`，而报错说的是
+> "连不上主机"，一个字都不提密码）。分量写法把转义交给 `URL.create()`，
+> 不用关心密码里有什么字符。解析逻辑见 `models/db_url.py`。
 
 ```bash
 # 建库（必须是 utf8mb4，否则中文会存成问号）
@@ -282,7 +309,7 @@ python scripts/migrate_sqlite_to_mysql.py --check    # 迁移前先核对行数�
 python scripts/migrate_sqlite_to_mysql.py            # 迁数据
 ```
 
-回退成本为零：把 `.env` 里那行删掉就又回到 SQLite，源库全程没被改过。
+回退成本为零：把 `.env` 里那五行注释掉就又回到 SQLite，源库全程没被改过。
 
 > ⚠️ **Agents SDK 的记忆库 `assert/conversations.db` 不跟着迁**。那是 SDK 自带的
 > SQLite 实现（`AdvancedSQLiteSession`），表结构不受本项目控制 —— 换不动，也不该换。

@@ -25,6 +25,15 @@ jobs:
         run: |
           pip install -r requirements.txt pytest
 
+      # ⚠️ 必须在跑测试之前建表：models/orm.py 里**不再有** create_all 了，
+      # 表结构由 Alembic 管。这里跑一次 upgrade 顺便验证迁移能在**空库**上跑通
+      # （CI 里没有 .env，所以走默认的 SQLite）。
+      - name: Apply migrations
+        run: python -m alembic upgrade head
+        env:
+          JWT_SECRET: ci-only-fake-secret-0123456789abcdef0123456789abcdef
+          TIMESTAMP_SECRET: ci-only-fake-secret-0123456789abcdef0123456789abcdef
+
       - name: Run unit tests
         run: python -m pytest test/test_schema_normalizer.py test/test_redis_client.py test/test_auth.py test/test_chat_common.py test/test_jinja2_template.py test/test_errors.py test/test_check_numbers.py test/test_observability.py test/test_tool_output.py test/test_report.py test/test_memory_parse.py test/test_db_limits.py -v
         env:
