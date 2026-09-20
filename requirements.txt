@@ -61,18 +61,19 @@ SQLAlchemy==2.0.48
 #    按那个字符串 pin 会让 pip install -r requirements.txt 直接失败
 #    （No matching distribution found），Docker / CI 全挂。踩过。
 #
-PyMySQL==1.2.0
-# 如果换到 MySQL 8 的官方镜像/新装服务器（默认认证插件是 caching_sha2_password），
-# **首次、未缓存**的连接需要 cryptography，否则报：
+# [rsa] extra 会带上 cryptography：MySQL 8 的默认认证插件 caching_sha2_password
+# 在**首次、未缓存**的连接上需要它，否则报：
 #   RuntimeError: 'cryptography' package is required for sha256_password or
 #                 caching_sha2_password auth methods
-# 那时把上面那行换成下面这行即可：
-# PyMySQL[rsa]==1.2.0
-#
-# 为什么不默认开：本机 root 用的是 mysql_native_password（查过 mysql.user 确认），
-# 用不到它；而 [rsa] 要求 cryptography>=46.0.7，本机装的是 46.0.6 ——
-# 启用会顺带把它升到 50.x，而 Authlib / dashscope / pdfminer.six 都依赖它。
-# 没必要的时候不动别人的依赖。
+# 本机 root 用的是 mysql_native_password（查过 mysql.user），用不到它 —— 但换成
+# Docker 里的 MySQL 8 / 新装服务器就会用到，而那个报错完全指不到依赖上，很难查。
+# 所以默认带上。
+PyMySQL[rsa]==1.2.0
+# cryptography 必须**显式 pin**：不写的话 pip 会在构建时现解析最新版，
+# Docker 镜像就不可复现了（违反本文件开头的约定）。
+# 50.0.1 是本机实测装上的版本，也是 AutoDL 那次部署环境里的版本
+# （见 docs/requirements.lock-autodl-20260913.txt）。
+cryptography==50.0.1
 redis==6.4.0
 
 # ---- 认证与网络 ----
